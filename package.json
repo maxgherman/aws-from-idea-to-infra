@@ -1,0 +1,21 @@
+{
+  "name": "first-steps-cdk",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "synth": "cdk synth",
+    "cdk": "cdk"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.152.0",
+    "constructs": "10.3.0",
+    "source-map-support": "0.5.21"
+  },
+  "devDependencies": {
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3"
+  }
+}
+
