@@ -11,14 +11,30 @@ export class Stack extends cdk.Stack {
     const repo = this.node.tryGetContext('repo');
     const sha = this.node.tryGetContext('sha');
     const run = this.node.tryGetContext('run');
+    // Optional contexts passed by CI to make bucket name concrete (no tokens)
+    const acct = this.node.tryGetContext('acct');
+    const reg  = this.node.tryGetContext('reg');
 
-    const bucket = new s3.Bucket(this, 'PreviewBucket', {
-      bucketName: `pr-${pr}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`.toLowerCase(),
+    // Build props and only set an explicit name when we have concrete values
+    const bucketProps: s3.BucketProps = {
       autoDeleteObjects: true,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
-    });
+    };
+
+    if (acct && reg) {
+      const name = `pr-${String(pr)}-${String(acct)}-${String(reg)}`
+        .toLowerCase()
+        .replace(/[^a-z0-9.-]/g, '')
+        .slice(0, 63)
+        .replace(/[.-]+$/g, '');
+      if (name.length >= 3) {
+        (bucketProps as any).bucketName = name;
+      }
+    }
+
+    const bucket = new s3.Bucket(this, 'PreviewBucket', bucketProps);
 
     // Tag all resources in this stack for audits/cleanup
     Tags.of(this).add('managed-by', 'cdk');
@@ -32,4 +48,3 @@ export class Stack extends cdk.Stack {
     new cdk.CfnOutput(this, 'BucketName', { value: bucket.bucketName });
   }
 }
-
