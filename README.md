@@ -135,3 +135,4 @@ aws s3api get-bucket-tagging        --bucket "$BUCKET" --region "$REGION"
 aws s3api get-public-access-block   --bucket "$BUCKET" --region "$REGION"
 aws s3api get-bucket-encryption     --bucket "$BUCKET" --region "$REGION"
 ```
+
