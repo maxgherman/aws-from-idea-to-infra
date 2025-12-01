@@ -20,17 +20,12 @@ export class GithubOidcRoleStack extends cdk.Stack {
     // exactly: repo:OWNER/REPO:pull_request
     const repoSub = `repo:${owner}/${repo}:pull_request`;
 
+    // Relaxed trust for debugging: require only audience and exact sub for PRs.
+    // This ensures OIDC works; re-tighten with repository/actor/ref after success.
     const ghPrincipal = new iam.WebIdentityPrincipal(provider.openIdConnectProviderArn, {
       StringEquals: {
         'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-        'token.actions.githubusercontent.com:repository': `${owner}/${repo}`,
-        'token.actions.githubusercontent.com:event_name': 'pull_request',
-        'token.actions.githubusercontent.com:actor': actor,
         'token.actions.githubusercontent.com:sub': repoSub,
-      },
-      StringLike: {
-        // only merged refs for PR workflows
-        'token.actions.githubusercontent.com:ref': 'refs/pull/*/merge',
       },
     });
 

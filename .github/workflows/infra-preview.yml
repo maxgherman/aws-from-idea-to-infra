@@ -45,6 +45,12 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           role-session-name: pr-${{ github.event.pull_request.number }}
 
+      - name: Resolve CDK env (account/region)
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "CDK_DEFAULT_ACCOUNT=$ACCOUNT_ID" >> $GITHUB_ENV
+          echo "CDK_DEFAULT_REGION=${{ vars.AWS_REGION }}" >> $GITHUB_ENV
+
       - name: Deploy preview stack (stack name not hardcoded)
         run: |
           cdk deploy \
