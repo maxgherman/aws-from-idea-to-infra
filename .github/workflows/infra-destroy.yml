@@ -33,6 +33,7 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           role-session-name: pr-${{ github.event.pull_request.number }}-destroy
+          audience: sts.amazonaws.com
 
       - name: Resolve CDK env (account/region)
         run: |

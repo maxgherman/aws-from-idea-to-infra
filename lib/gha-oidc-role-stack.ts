@@ -9,6 +9,9 @@ export class GithubOidcRoleStack extends cdk.Stack {
     const provider = new iam.OpenIdConnectProvider(this, 'GitHubOIDC', {
       url: 'https://token.actions.githubusercontent.com',
       clientIds: ['sts.amazonaws.com'],
+      // GitHub's documented SHA-1 thumbprint for the root CA chain
+      // https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/about-security-hardening-with-openid-connect#adding-the-oidc-provider-to-aws
+      thumbprints: ['6938fd4d98bab03faadb97b34396831e3780aea1'],
     });
 
     // Tight trust policy: lock to repo, event, ref pattern, and actor
@@ -20,12 +23,14 @@ export class GithubOidcRoleStack extends cdk.Stack {
     // exactly: repo:OWNER/REPO:pull_request
     const repoSub = `repo:${owner}/${repo}:pull_request`;
 
-    // Relaxed trust for debugging: require only audience and exact sub for PRs.
-    // This ensures OIDC works; re-tighten with repository/actor/ref after success.
+    // Relaxed but robust trust: audience must be STS and sub must match this repo
+    // for any event type (PRs, pushes, etc.). We'll re-tighten after it works.
     const ghPrincipal = new iam.WebIdentityPrincipal(provider.openIdConnectProviderArn, {
       StringEquals: {
         'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-        'token.actions.githubusercontent.com:sub': repoSub,
+      },
+      StringLike: {
+        'token.actions.githubusercontent.com:sub': `repo:${owner}/${repo}:*`,
       },
     });
 
