@@ -11,20 +11,28 @@ export class GithubOidcRoleStack extends cdk.Stack {
       clientIds: ['sts.amazonaws.com'],
     });
 
-    // Replace OWNER and REPO with your org/user and repository name
-    const repoSub = this.node.tryGetContext('repoSub') ?? 'repo:OWNER/REPO:*';
+    // Tight trust policy: lock to repo, event, ref pattern, and actor
+    const owner = this.node.tryGetContext('owner') ?? 'OWNER';
+    const repo  = this.node.tryGetContext('repo')  ?? 'REPO';
+    const actor = this.node.tryGetContext('actor') ?? 'YOUR_GH_USERNAME';
 
-    const ghPrincipal = new iam.WebIdentityPrincipal(
-      provider.openIdConnectProviderArn,
-      {
-        StringEquals: {
-          'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-        },
-        StringLike: {
-          'token.actions.githubusercontent.com:sub': repoSub,
-        },
+    // AWS requires scoping the `sub` claim explicitly. For PRs it is
+    // exactly: repo:OWNER/REPO:pull_request
+    const repoSub = `repo:${owner}/${repo}:pull_request`;
+
+    const ghPrincipal = new iam.WebIdentityPrincipal(provider.openIdConnectProviderArn, {
+      StringEquals: {
+        'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+        'token.actions.githubusercontent.com:repository': `${owner}/${repo}`,
+        'token.actions.githubusercontent.com:event_name': 'pull_request',
+        'token.actions.githubusercontent.com:actor': actor,
+        'token.actions.githubusercontent.com:sub': repoSub,
       },
-    );
+      StringLike: {
+        // only merged refs for PR workflows
+        'token.actions.githubusercontent.com:ref': 'refs/pull/*/merge',
+      },
+    });
 
     const role = new iam.Role(this, 'GitHubActionsRole', {
       roleName: 'GitHubActionsDeployRole',
@@ -39,4 +47,3 @@ export class GithubOidcRoleStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'RoleArn', { value: role.roleArn });
   }
 }
-
