@@ -33,11 +33,21 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           role-session-name: pr-${{ github.event.pull_request.number }}-destroy
+          audience: sts.amazonaws.com
+
+      - name: Resolve CDK env (account/region)
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=$ACCOUNT_ID" >> $GITHUB_ENV
+          echo "CDK_DEFAULT_ACCOUNT=$ACCOUNT_ID" >> $GITHUB_ENV
+          echo "CDK_DEFAULT_REGION=${{ vars.AWS_REGION }}" >> $GITHUB_ENV
 
       - name: Destroy preview stack (no hardcoded name)
         run: |
           cdk destroy \
             -c pr=${PR_NUMBER} \
+            -c acct=${ACCOUNT_ID} \
+            -c reg=${{ vars.AWS_REGION }} \
             -c repo=${GITHUB_REPOSITORY} \
             -c sha=${GITHUB_SHA} \
             -c run=${GITHUB_RUN_ID} \
