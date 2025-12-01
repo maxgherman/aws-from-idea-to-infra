@@ -79,3 +79,59 @@ Notes:
 
 - Budgets is effectively account-global; keep region consistent with your profiles.
 - Tighten permissions later by scoping `CdkDeployerRole` to least privilege for your stacks.
+
+## GitHub Actions PR Preview (OIDC)
+
+This repo includes a minimal per‑PR preview using CDK + S3. It assumes an AWS role via GitHub OIDC (no long‑lived keys).
+
+- Deploy the OIDC role (once)
+
+  ```bash
+  # From this repo, as your dev profile
+  npx cdk deploy \
+    --app "npx ts-node --prefer-ts-exts bin/gha-oidc-role.ts" \
+    -c "repoSub=repo:OWNER/REPO:*" \
+    --profile dev
+
+  # Copy the RoleArn output
+  ```
+
+- Configure repository variables (GitHub UI)
+
+  - Settings → Secrets and variables → Actions → Variables → New repository variable
+  - Add:
+    - `AWS_REGION` (e.g., `us-east-1`)
+    - `AWS_ROLE_ARN` (the `RoleArn` from the stack output)
+
+  The workflows are guarded and do nothing until these variables are set.
+
+- Open a PR to trigger the preview
+
+- `.github/workflows/infra-preview.yml` deploys an S3 bucket stack named by PR number and tags it with PR/repo/SHA/run.
+- Closing the PR triggers `.github/workflows/infra-destroy.yml` which destroys the stack and bucket.
+
+Verify (optional)
+
+```bash
+PR=123
+REGION=us-east-1
+STACK=Stack-PR${PR}
+
+# Stack status
+aws cloudformation describe-stacks \
+  --stack-name "$STACK" \
+  --region "$REGION" \
+  --query 'Stacks[0].StackStatus' --output text
+
+# Resolve bucket name
+BUCKET=$(aws cloudformation list-stack-resources \
+  --stack-name "$STACK" --region "$REGION" \
+  --query "StackResourceSummaries[?ResourceType=='AWS::S3::Bucket'].PhysicalResourceId | [0]" \
+  --output text)
+echo "$BUCKET"
+
+# Check tags/security
+aws s3api get-bucket-tagging        --bucket "$BUCKET" --region "$REGION"
+aws s3api get-public-access-block   --bucket "$BUCKET" --region "$REGION"
+aws s3api get-bucket-encryption     --bucket "$BUCKET" --region "$REGION"
+```

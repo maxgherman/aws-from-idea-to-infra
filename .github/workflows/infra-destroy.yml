@@ -1,0 +1,45 @@
+name: PR Preview Teardown
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  destroy:
+    if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR }}
+    environment: aws-preview
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install deps
+        run: |
+          npm ci
+          npm i -g aws-cdk@2
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-session-name: pr-${{ github.event.pull_request.number }}-destroy
+
+      - name: Destroy preview stack (no hardcoded name)
+        run: |
+          cdk destroy \
+            -c pr=${PR_NUMBER} \
+            -c repo=${GITHUB_REPOSITORY} \
+            -c sha=${GITHUB_SHA} \
+            -c run=${GITHUB_RUN_ID} \
+            --app "npx ts-node bin/preview.ts" \
+            -f

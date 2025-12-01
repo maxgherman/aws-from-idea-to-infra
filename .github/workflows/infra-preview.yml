@@ -1,0 +1,56 @@
+name: PR Preview Infra
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  id-token: write   # for OIDC
+  contents: read
+
+jobs:
+  deploy:
+    if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR }}
+    environment: aws-preview
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install deps
+        run: |
+          npm ci
+          npm i -g aws-cdk@2
+
+      - name: Debug OIDC inputs
+        run: |
+          echo "actor=${{ github.actor }}"
+          echo "event_name=${{ github.event_name }}"
+          echo "repository=${{ github.repository }}"
+          echo "ref=${{ github.ref }}"
+          echo "pr_author=${{ github.event.pull_request.user.login }}"
+          echo "AWS_ROLE_ARN=${{ vars.AWS_ROLE_ARN }}"
+          echo "AWS_REGION=${{ vars.AWS_REGION }}"
+          echo "AWS_ACTOR=${{ vars.AWS_ACTOR }}"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-session-name: pr-${{ github.event.pull_request.number }}
+
+      - name: Deploy preview stack (stack name not hardcoded)
+        run: |
+          cdk deploy \
+            -c pr=${PR_NUMBER} \
+            -c repo=${GITHUB_REPOSITORY} \
+            -c sha=${GITHUB_SHA} \
+            -c run=${GITHUB_RUN_ID} \
+            --app "npx ts-node bin/preview.ts" \
+            --require-approval never

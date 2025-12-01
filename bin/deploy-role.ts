@@ -11,7 +11,10 @@ new DeployRoleStack(app, 'DeployRoleStack', {
 });
 
 // Budgets is effectively account-global; keep the region consistent with your CLI profile.
-new BudgetStack(app, 'BudgetStack', {
-  env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
-});
-
+// Only add the BudgetStack if a budgetEmail context is provided.
+const haveBudgetEmail = !!app.node.tryGetContext('budgetEmail');
+if (haveBudgetEmail) {
+  new BudgetStack(app, 'BudgetStack', {
+    env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
+  });
+}
