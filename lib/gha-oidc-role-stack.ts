@@ -28,6 +28,7 @@ export class GithubOidcRoleStack extends cdk.Stack {
     const ghPrincipal = new iam.WebIdentityPrincipal(provider.openIdConnectProviderArn, {
       StringEquals: {
         'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
+        'token.actions.githubusercontent.com:repository': `${owner}/${repo}`,
       },
       StringLike: {
         'token.actions.githubusercontent.com:sub': `repo:${owner}/${repo}:*`,
