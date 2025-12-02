@@ -35,14 +35,14 @@ jobs:
           role-session-name: pr-${{ github.event.pull_request.number }}
           audience: sts.amazonaws.com
 
-      - name: Resolve CDK env (account/region)
+      - name: Resolve CDK env
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           echo "ACCOUNT_ID=$ACCOUNT_ID" >> $GITHUB_ENV
           echo "CDK_DEFAULT_ACCOUNT=$ACCOUNT_ID" >> $GITHUB_ENV
           echo "CDK_DEFAULT_REGION=${{ vars.AWS_REGION }}" >> $GITHUB_ENV
 
-      - name: Deploy preview stack (stack name not hardcoded)
+      - name: Deploy preview stack
         run: |
           cdk deploy \
             -c pr=${PR_NUMBER} \

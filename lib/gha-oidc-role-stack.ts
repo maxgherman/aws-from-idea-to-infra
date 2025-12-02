@@ -14,23 +14,15 @@ export class GithubOidcRoleStack extends cdk.Stack {
       thumbprints: ['6938fd4d98bab03faadb97b34396831e3780aea1'],
     });
 
-    // Tight trust policy: lock to repo, event, ref pattern, and actor
+    // Minimal working trust: restrict to your repo + environment token form.
     const owner = this.node.tryGetContext('owner') ?? 'OWNER';
     const repo  = this.node.tryGetContext('repo')  ?? 'REPO';
-    const actor = this.node.tryGetContext('actor') ?? 'YOUR_GH_USERNAME';
+    const envName = String(this.node.tryGetContext('env') ?? 'aws-preview');
 
-    // AWS requires scoping the `sub` claim explicitly. For PRs it is
-    // exactly: repo:OWNER/REPO:pull_request
-    const repoSub = `repo:${owner}/${repo}:pull_request`;
-
-    // Relaxed but robust trust: audience must be STS and sub must match this repo
-    // for any event type (PRs, pushes, etc.). We'll re-tighten after it works.
     const ghPrincipal = new iam.WebIdentityPrincipal(provider.openIdConnectProviderArn, {
       StringEquals: {
         'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-      },
-      StringLike: {
-        'token.actions.githubusercontent.com:sub': `repo:${owner}/${repo}:*`,
+        'token.actions.githubusercontent.com:sub': `repo:${owner}/${repo}:environment:${envName}`,
       },
     });
 
