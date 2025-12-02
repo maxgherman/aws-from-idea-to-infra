@@ -1,0 +1,10 @@
+# Code owners for sensitive CI/CD areas. Enable
+# "Require review from Code Owners" in branch protection
+# so changes to these files require approval.
+
+# All workflow files
+/.github/workflows/** @maxgherman
+
+# Lock down OIDC role trust changes
+/lib/gha-oidc-role-stack.ts @maxgherman
+
