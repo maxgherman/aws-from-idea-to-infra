@@ -18,11 +18,17 @@ export class GithubOidcRoleStack extends cdk.Stack {
     const owner = this.node.tryGetContext('owner') ?? 'OWNER';
     const repo  = this.node.tryGetContext('repo')  ?? 'REPO';
     const envName = String(this.node.tryGetContext('env') ?? 'aws-preview');
+    const teardownEnv = String(this.node.tryGetContext('teardownEnv') ?? 'aws-teardown');
 
     const ghPrincipal = new iam.WebIdentityPrincipal(provider.openIdConnectProviderArn, {
       StringEquals: {
         'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-        'token.actions.githubusercontent.com:sub': `repo:${owner}/${repo}:environment:${envName}`,
+      },
+      StringLike: {
+        'token.actions.githubusercontent.com:sub': [
+          `repo:${owner}/${repo}:environment:${envName}`,
+          `repo:${owner}/${repo}:environment:${teardownEnv}`,
+        ],
       },
     });
 
