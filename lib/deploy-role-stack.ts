@@ -6,7 +6,12 @@ export class DeployRoleStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const assumedBy = new iam.AccountRootPrincipal().withConditions({
+    // Allow a specific IAM user (default: Admin) to assume the role with MFA
+    const adminUser = String(this.node.tryGetContext('adminUser') ?? 'Admin');
+    const account = cdk.Stack.of(this).account;
+    const assumedBy = new iam.ArnPrincipal(
+      `arn:aws:iam::${account}:user/${adminUser}`,
+    ).withConditions({
       Bool: { 'aws:MultiFactorAuthPresent': 'true' },
     });
 
@@ -22,4 +27,3 @@ export class DeployRoleStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'RoleArn', { value: role.roleArn });
   }
 }
-
