@@ -42,7 +42,7 @@ jobs:
           echo "CDK_DEFAULT_ACCOUNT=$ACCOUNT_ID" >> $GITHUB_ENV
           echo "CDK_DEFAULT_REGION=${{ vars.AWS_REGION }}" >> $GITHUB_ENV
 
-      - name: Destroy preview stack (no hardcoded name)
+      - name: Destroy preview stack
         run: |
           cdk destroy \
             -c pr=${PR_NUMBER} \
