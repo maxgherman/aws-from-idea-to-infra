@@ -37,7 +37,7 @@ export class GithubOidcRoleStack extends cdk.Stack {
       assumedBy: ghPrincipal,
       // Start wide; tighten to least privilege later
       managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName('AdministratorAccess'),
+        iam.ManagedPolicy.fromAwsManagedPolicyName('PowerUserAccess'),
       ],
       description: 'Assumable by GitHub Actions via OIDC for CDK deploy/destroy',
     });
