@@ -1,1 +1,1 @@
-[Account botstrap](https://www.max-gherman.dev/partly-cloudy/aws-from-idea-to-infra/account-bootstrap/ "DOCS")
+[Account & botstrap](https://www.max-gherman.dev/partly-cloudy/aws-from-idea-to-infra/account-bootstrap/ "DOCS")
