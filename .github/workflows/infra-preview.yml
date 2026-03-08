@@ -8,6 +8,7 @@ permissions:
   id-token: write   # for OIDC
   contents: read
   issues: write
+  pull-requests: write
 
 jobs:
   deploy:
@@ -61,6 +62,7 @@ jobs:
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         with:
+          github-token: ${{ secrets.PR_COMMENT_TOKEN || github.token }}
           script: |
             const fs = require('fs');
             const marker = '<!-- pr-preview-url -->';
