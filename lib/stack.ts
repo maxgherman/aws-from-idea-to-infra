@@ -1,6 +1,9 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import { Tags } from 'aws-cdk-lib';
 
 export class Stack extends cdk.Stack {
@@ -36,6 +39,30 @@ export class Stack extends cdk.Stack {
 
     const bucket = new s3.Bucket(this, 'PreviewBucket', bucketProps);
 
+    const oai = new cloudfront.OriginAccessIdentity(this, 'PreviewOai');
+    bucket.grantRead(oai);
+
+    const distribution = new cloudfront.Distribution(this, 'PreviewDistribution', {
+      defaultRootObject: 'index.html',
+      defaultBehavior: {
+        origin: new origins.S3Origin(bucket, { originAccessIdentity: oai }),
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+      },
+      errorResponses: [
+        // Handy default for small SPAs; harmless for plain static sites.
+        { httpStatus: 403, responseHttpStatus: 200, responsePagePath: '/index.html' },
+        { httpStatus: 404, responseHttpStatus: 200, responsePagePath: '/index.html' },
+      ],
+    });
+
+    new s3deploy.BucketDeployment(this, 'DeployPreviewSite', {
+      destinationBucket: bucket,
+      sources: [s3deploy.Source.asset('site')],
+      distribution,
+      distributionPaths: ['/*'],
+    });
+
     // Tag all resources in this stack for audits/cleanup
     Tags.of(this).add('managed-by', 'cdk');
     Tags.of(this).add('preview', 'true');
@@ -46,5 +73,6 @@ export class Stack extends cdk.Stack {
     Tags.of(bucket).add('resource', 'preview-bucket');
 
     new cdk.CfnOutput(this, 'BucketName', { value: bucket.bucketName });
+    new cdk.CfnOutput(this, 'PreviewUrl', { value: `https://${distribution.domainName}/` });
   }
 }
