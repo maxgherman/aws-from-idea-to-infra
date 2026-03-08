@@ -1,1 +1,1 @@
-[CI/CD](https://www.max-gherman.dev/partly-cloudy/aws-from-idea-to-infra/ci-cd-github-actions/ "DOCS")
+[Static website](https://www.max-gherman.dev/partly-cloudy/aws-from-idea-to-infra/static-website/ "DOCS")
