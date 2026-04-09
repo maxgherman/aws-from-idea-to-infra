@@ -81,9 +81,7 @@ jobs:
             const repo = context.repo.repo;
             const issue_number = context.issue.number;
 
-            const body = `${marker}
-Preview: ${previewUrl}
-API: ${apiUrl}`;
+            const body = `${marker}\nPreview: ${previewUrl}\nAPI: ${apiUrl}`;
             const { data: comments } = await github.rest.issues.listComments({
               owner,
               repo,
