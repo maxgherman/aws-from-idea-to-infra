@@ -89,18 +89,18 @@ Workflows live in `.github/workflows/`:
 
 In your GitHub repo settings:
 
-1) Create repository variables:
+- Create repository variables:
 
-- `AWS_REGION` (example: `us-east-1`)
-- `AWS_ROLE_ARN` (output of `GithubOidcRoleStack`)
-- `AWS_ACTOR` (your GitHub username; used as a guard)
+  - `AWS_REGION` (example: `us-east-1`)
+  - `AWS_ROLE_ARN` (output of `GithubOidcRoleStack`)
+  - `AWS_ACTOR` (your GitHub username; used as a guard)
 
-2) Create environments:
+- Create environments:
 
-- `aws-preview` (typically require approval)
-- `aws-teardown` (typically no approval)
+  - `aws-preview` (typically require approval)
+  - `aws-teardown` (typically no approval)
 
-3) Ensure workflow tokens can comment on PRs:
+- Ensure workflow tokens can comment on PRs:
 
 - Recommended: set `Settings → Actions → General → Workflow permissions` to **Read and write**.
 - Fallback: create an Actions secret `PR_COMMENT_TOKEN` (fine‑grained PAT) and the workflow will use it for PR comments.
