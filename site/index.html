@@ -3,82 +3,76 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>PR Preview</title>
+    <title>PR preview</title>
     <style>
-      :root {
-        color-scheme: light dark;
-      }
       body {
-        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-        margin: 0;
-        padding: 3rem 1.5rem;
-      }
-      .card {
-        max-width: 52rem;
-        margin: 0 auto;
-        border: 1px solid rgba(127, 127, 127, 0.35);
-        border-radius: 14px;
-        padding: 1.25rem;
-      }
-      h1 {
-        margin: 0 0 0.5rem;
-        font-size: 1.6rem;
-      }
-      p {
-        margin: 0.5rem 0;
+        font-family: sans-serif;
+        max-width: 48rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
         line-height: 1.5;
       }
-      code {
-        padding: 0.15rem 0.35rem;
-        border-radius: 6px;
-        background: rgba(127, 127, 127, 0.2);
+
+      h1 {
+        margin-top: 0;
       }
-      .muted {
-        opacity: 0.75;
-      }
-      .row {
-        display: flex;
-        gap: 0.75rem;
-        flex-wrap: wrap;
-        margin-top: 1rem;
-      }
+
       button {
-        border: 0;
-        border-radius: 999px;
-        padding: 0.65rem 1rem;
+        padding: 0.7rem 1rem;
         cursor: pointer;
       }
+
       pre {
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-        padding: 0.9rem;
-        border-radius: 10px;
-        background: rgba(127, 127, 127, 0.12);
+        padding: 1rem;
+        background: #f4f4f5;
+        overflow-x: auto;
       }
     </style>
   </head>
   <body>
-    <div class="card">
-      <h1>PR Preview</h1>
-      <p class="muted">Deployed by GitHub Actions via OIDC + CDK.</p>
-      <p>If you can see this page, the static preview is live. This chapter also adds a Lambda-backed API.</p>
-      <p>
-        Call the API directly by replacing <code>&lt;api-url&gt;</code> with the <code>ApiUrl</code> value from the PR comment.
-      </p>
-      <div class="row">
-        <button id="copy-curl" type="button">Copy curl template</button>
-      </div>
-      <pre id="output">curl "&lt;api-url&gt;"</pre>
-    </div>
-    <script>
-      const output = document.getElementById('output');
-      const copyButton = document.getElementById('copy-curl');
-      copyButton.addEventListener('click', async () => {
-        const text = 'curl "<api-url>"';
-        await navigator.clipboard.writeText(text);
-        output.textContent = `${text}
+    <h1>Preview environment</h1>
+    <p>This page can call the preview API for this pull request.</p>
 
-Paste the real ApiUrl from the PR comment.`;
+    <button id="call-api" type="button">Call API</button>
+    <p id="status">Ready.</p>
+    <pre id="result" hidden></pre>
+
+    <script src="./config.js"></script>
+    <script>
+      const button = document.getElementById('call-api');
+      const status = document.getElementById('status');
+      const result = document.getElementById('result');
+      const apiUrl = window.__PREVIEW_API_URL__;
+
+      if (!apiUrl) {
+        button.disabled = true;
+        status.textContent = 'API URL is not configured.';
+      }
+
+      button.addEventListener('click', async () => {
+        status.textContent = 'Calling API...';
+        result.hidden = true;
+
+        try {
+          const response = await fetch(apiUrl, {
+            method: 'GET',
+            headers: {
+              accept: 'application/json',
+            },
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          const data = await response.json();
+          status.textContent = 'Success.';
+          result.textContent = JSON.stringify(data, null, 2);
+          result.hidden = false;
+        } catch (error) {
+          status.textContent = `Request failed: ${error.message}`;
+          result.textContent = '';
+        }
       });
     </script>
   </body>

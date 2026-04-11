@@ -4,4 +4,4 @@ dist/
 *.js
 *.d.ts
 *.js.map
-
+!site/config.js
