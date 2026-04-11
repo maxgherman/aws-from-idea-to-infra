@@ -57,6 +57,28 @@ jobs:
             --require-approval never \
             --outputs-file cdk-outputs.json
 
+      - name: Generate config.js for the preview page
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          STACK="Stack-PR${PR_NUMBER}"
+          API_URL=$(jq -r --arg stack "$STACK" '.[$stack].ApiUrl' cdk-outputs.json)
+          BUCKET_NAME=$(jq -r --arg stack "$STACK" '.[$stack].BucketName' cdk-outputs.json)
+          DISTRIBUTION_ID=$(jq -r --arg stack "$STACK" '.[$stack].DistributionId' cdk-outputs.json)
+
+          test -n "$API_URL" && test "$API_URL" != "null"
+          test -n "$BUCKET_NAME" && test "$BUCKET_NAME" != "null"
+          test -n "$DISTRIBUTION_ID" && test "$DISTRIBUTION_ID" != "null"
+
+          cat > site/config.js <<EOF
+          window.__PREVIEW_API_URL__ = '${API_URL}';
+          EOF
+
+          aws s3 cp site/config.js "s3://${BUCKET_NAME}/config.js"
+          aws cloudfront create-invalidation \
+            --distribution-id "$DISTRIBUTION_ID" \
+            --paths /config.js
+
       - name: Comment preview URLs
         uses: actions/github-script@v7
         env:

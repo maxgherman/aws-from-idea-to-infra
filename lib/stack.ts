@@ -93,6 +93,7 @@ export class Stack extends cdk.Stack {
     Tags.of(hello).add('resource', 'preview-api-function');
 
     new cdk.CfnOutput(this, 'BucketName', { value: bucket.bucketName });
+    new cdk.CfnOutput(this, 'DistributionId', { value: distribution.distributionId });
     new cdk.CfnOutput(this, 'PreviewUrl', {
       value: `https://${distribution.domainName}/?pr=${encodeURIComponent(pr)}`,
     });
