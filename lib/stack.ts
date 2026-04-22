@@ -5,8 +5,10 @@ import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as eventsources from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Tags } from 'aws-cdk-lib';
 
 export class Stack extends cdk.Stack {
@@ -69,10 +71,56 @@ export class Stack extends cdk.Stack {
       },
     });
 
+    const deadLetterQueue = new sqs.Queue(this, 'JobsDeadLetterQueue', {
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      retentionPeriod: cdk.Duration.days(14),
+    });
+
+    const jobsQueue = new sqs.Queue(this, 'JobsQueue', {
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      visibilityTimeout: cdk.Duration.seconds(60),
+      deadLetterQueue: {
+        queue: deadLetterQueue,
+        maxReceiveCount: 3,
+      },
+    });
+
+    const submitJob = new lambda.Function(this, 'SubmitJobFunction', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset('lambda/submit-job'),
+      timeout: cdk.Duration.seconds(5),
+      memorySize: 256,
+      environment: {
+        PR_NUMBER: pr,
+        QUEUE_URL: jobsQueue.queueUrl,
+      },
+    });
+
+    jobsQueue.grantSendMessages(submitJob);
+
+    const worker = new lambda.Function(this, 'WorkerFunction', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset('lambda/worker'),
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+      environment: {
+        PR_NUMBER: pr,
+      },
+    });
+
+    worker.addEventSource(
+      new eventsources.SqsEventSource(jobsQueue, {
+        batchSize: 5,
+        reportBatchItemFailures: true,
+      }),
+    );
+
     const api = new apigwv2.HttpApi(this, 'PreviewApi', {
       corsPreflight: {
         allowHeaders: ['content-type'],
-        allowMethods: [apigwv2.CorsHttpMethod.GET],
+        allowMethods: [apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.POST],
         allowOrigins: ['*'],
       },
     });
@@ -83,6 +131,12 @@ export class Stack extends cdk.Stack {
       integration: new integrations.HttpLambdaIntegration('HelloIntegration', hello),
     });
 
+    api.addRoutes({
+      path: '/jobs',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration('SubmitJobIntegration', submitJob),
+    });
+
     Tags.of(this).add('managed-by', 'cdk');
     Tags.of(this).add('preview', 'true');
     Tags.of(this).add('pr', pr);
@@ -91,11 +145,19 @@ export class Stack extends cdk.Stack {
     if (run) Tags.of(this).add('run-id', String(run));
     Tags.of(bucket).add('resource', 'preview-bucket');
     Tags.of(hello).add('resource', 'preview-api-function');
+    Tags.of(submitJob).add('resource', 'preview-job-submit-function');
+    Tags.of(worker).add('resource', 'preview-worker-function');
+    Tags.of(jobsQueue).add('resource', 'preview-jobs-queue');
+    Tags.of(deadLetterQueue).add('resource', 'preview-jobs-dlq');
 
     new cdk.CfnOutput(this, 'BucketName', { value: bucket.bucketName });
     new cdk.CfnOutput(this, 'PreviewUrl', {
       value: `https://${distribution.domainName}/?pr=${encodeURIComponent(pr)}`,
     });
+    new cdk.CfnOutput(this, 'DistributionId', { value: distribution.distributionId });
     new cdk.CfnOutput(this, 'ApiUrl', { value: `${api.url}hello` });
+    new cdk.CfnOutput(this, 'JobUrl', { value: `${api.url}jobs` });
+    new cdk.CfnOutput(this, 'JobsQueueName', { value: jobsQueue.queueName });
+    new cdk.CfnOutput(this, 'JobsDeadLetterQueueName', { value: deadLetterQueue.queueName });
   }
 }

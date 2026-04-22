@@ -57,6 +57,26 @@ jobs:
             --require-approval never \
             --outputs-file cdk-outputs.json
 
+      - name: Generate config.js for the preview page
+        run: |
+          STACK="Stack-PR${PR_NUMBER}"
+          JOB_URL=$(jq -r --arg stack "$STACK" '.[$stack].JobUrl' cdk-outputs.json)
+          BUCKET_NAME=$(jq -r --arg stack "$STACK" '.[$stack].BucketName' cdk-outputs.json)
+          DISTRIBUTION_ID=$(jq -r --arg stack "$STACK" '.[$stack].DistributionId' cdk-outputs.json)
+
+          test -n "$JOB_URL" && test "$JOB_URL" != "null"
+          test -n "$BUCKET_NAME" && test "$BUCKET_NAME" != "null"
+          test -n "$DISTRIBUTION_ID" && test "$DISTRIBUTION_ID" != "null"
+
+          cat > site/config.js <<EOF
+          window.__PREVIEW_JOB_URL__ = '${JOB_URL}';
+          EOF
+
+          aws s3 cp site/config.js "s3://${BUCKET_NAME}/config.js" --content-type application/javascript
+          aws cloudfront create-invalidation \
+            --distribution-id "$DISTRIBUTION_ID" \
+            --paths /config.js
+
       - name: Comment preview URLs
         uses: actions/github-script@v7
         env:
@@ -70,18 +90,22 @@ jobs:
             const outputs = JSON.parse(fs.readFileSync('cdk-outputs.json', 'utf8'));
             const previewUrl = outputs?.[stackName]?.PreviewUrl;
             const apiUrl = outputs?.[stackName]?.ApiUrl;
+            const jobUrl = outputs?.[stackName]?.JobUrl;
             if (!previewUrl) {
               throw new Error(`Missing PreviewUrl output for stack "${stackName}"`);
             }
             if (!apiUrl) {
               throw new Error(`Missing ApiUrl output for stack "${stackName}"`);
             }
+            if (!jobUrl) {
+              throw new Error(`Missing JobUrl output for stack "${stackName}"`);
+            }
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = context.issue.number;
 
-            const body = `${marker}\nPreview: ${previewUrl}\nAPI: ${apiUrl}`;
+            const body = `${marker}\nPreview: ${previewUrl}\nAPI: ${apiUrl}\nJobs: ${jobUrl}`;
             const { data: comments } = await github.rest.issues.listComments({
               owner,
               repo,

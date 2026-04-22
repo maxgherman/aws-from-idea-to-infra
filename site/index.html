@@ -55,31 +55,90 @@
         border-radius: 10px;
         background: rgba(127, 127, 127, 0.12);
       }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0.7rem 0.85rem;
+        border: 1px solid rgba(127, 127, 127, 0.35);
+        border-radius: 10px;
+        background: transparent;
+      }
+      label {
+        display: block;
+        margin-top: 1rem;
+        margin-bottom: 0.4rem;
+      }
     </style>
   </head>
   <body>
     <div class="card">
       <h1>PR Preview</h1>
       <p class="muted">Deployed by GitHub Actions via OIDC + CDK.</p>
-      <p>If you can see this page, the static preview is live. This chapter also adds a Lambda-backed API.</p>
-      <p>
-        Call the API directly by replacing <code>&lt;api-url&gt;</code> with the <code>ApiUrl</code> value from the PR comment.
-      </p>
+      <p>If you can see this page, the static preview is live. This version adds an async path with API Gateway, SQS, Lambda, and a DLQ.</p>
+      <p>Use the buttons below to enqueue a job or send one that intentionally fails so you can observe retries and the DLQ path.</p>
+      <label for="task-name">Task name</label>
+      <input id="task-name" name="task-name" type="text" value="resize-image" />
       <div class="row">
-        <button id="copy-curl" type="button">Copy curl template</button>
+        <button id="submit-job" type="button">Submit Job</button>
+        <button id="submit-fail-job" type="button">Submit Failing Job</button>
       </div>
-      <pre id="output">curl "&lt;api-url&gt;"</pre>
+      <p id="status">Ready.</p>
+      <pre id="output" hidden></pre>
     </div>
+    <script src="./config.js"></script>
     <script>
-      const output = document.getElementById('output');
-      const copyButton = document.getElementById('copy-curl');
-      copyButton.addEventListener('click', async () => {
-        const text = 'curl "<api-url>"';
-        await navigator.clipboard.writeText(text);
-        output.textContent = `${text}
+      window.__PREVIEW_JOB_URL__ = window.__PREVIEW_JOB_URL__ || '';
 
-Paste the real ApiUrl from the PR comment.`;
-      });
+      const status = document.getElementById('status');
+      const output = document.getElementById('output');
+      const taskName = document.getElementById('task-name');
+      const submitJobButton = document.getElementById('submit-job');
+      const submitFailJobButton = document.getElementById('submit-fail-job');
+      const jobUrl = window.__PREVIEW_JOB_URL__;
+
+      if (!jobUrl) {
+        submitJobButton.disabled = true;
+        submitFailJobButton.disabled = true;
+        status.textContent = 'Job URL is not configured.';
+      }
+
+      const submitJob = async ({ fail }) => {
+        status.textContent = fail ? 'Submitting failing job...' : 'Submitting job...';
+        output.hidden = true;
+
+        try {
+          const response = await fetch(jobUrl, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              accept: 'application/json',
+            },
+            body: JSON.stringify({
+              task: taskName.value.trim() || 'demo-job',
+              fail,
+            }),
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) {
+            throw new Error(data?.error || `HTTP ${response.status}`);
+          }
+
+          status.textContent = fail
+            ? 'Failing job queued. Watch retries and the DLQ.'
+            : 'Job queued successfully.';
+          output.textContent = JSON.stringify(data, null, 2);
+          output.hidden = false;
+        } catch (error) {
+          status.textContent = `Request failed: ${error.message}`;
+          output.textContent = '';
+          output.hidden = true;
+        }
+      };
+
+      submitJobButton.addEventListener('click', () => submitJob({ fail: false }));
+      submitFailJobButton.addEventListener('click', () => submitJob({ fail: true }));
     </script>
   </body>
 </html>
