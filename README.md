@@ -6,6 +6,7 @@ This repo focuses on two things:
 
 - *Account guardrails*: a dedicated deploy role you assume with MFA, plus an optional AWS Budget.
 - *PR preview infrastructure*: per‑pull‑request ephemeral infra deployed by GitHub Actions via OIDC (no long‑lived AWS keys), and torn down when the PR closes.
+- *Private asset processing*: authenticated browser uploads, private S3 storage, queue-backed validation, DynamoDB metadata, and CloudFront delivery of accepted assets.
 
 ## Prerequisites
 
@@ -21,7 +22,7 @@ This is a CDK TypeScript app with multiple entrypoints in `bin/`:
 
 - `bin/deploy-role.ts`: creates `CdkDeployerRole` (assumable by an IAM user with MFA) and optionally a monthly AWS Budget.
 - `bin/gha-oidc-role.ts`: creates the GitHub OIDC provider + `GitHubActionsDeployRole` for CI/CD.
-- `bin/preview.ts`: deploys the per‑PR preview stack (S3 + CloudFront + static site upload).
+- `bin/preview.ts`: deploys the per‑PR asset preview stack (Cognito, private S3, SQS, Lambda, DynamoDB, CloudFront, and the static site).
 
 Stacks live in `lib/`.
 
@@ -105,11 +106,13 @@ In your GitHub repo settings:
 - Recommended: set `Settings → Actions → General → Workflow permissions` to **Read and write**.
 - Fallback: create an Actions secret `PR_COMMENT_TOKEN` (fine‑grained PAT) and the workflow will use it for PR comments.
 
-Now: open a PR (from a branch in the same repo, not a fork). The workflow deploys `Stack-PR<number>` and comments the CloudFront URL.
+Now: open a PR (from a branch in the same repo, not a fork). The workflow deploys `Stack-PR<number>` and comments the CloudFront URL plus the asset API URL.
 
-## Notes
+## Preview access and lifecycle
 
-- The preview stack is designed to be ephemeral: it uses destructive removal policies and auto-deletes S3 objects on teardown.
+- The preview stack is intentionally ephemeral: it deletes its user pool, DynamoDB table, queues, and S3 objects when its PR closes.
+- User self-sign-up is disabled. Provision a test user in the deployed preview user pool before using the upload page; this prevents an unauthenticated PR preview from becoming an open registration endpoint.
+- Original uploads remain private. Only an asset that the worker accepts is available through the CloudFront `/assets/*` path.
 - CloudFront deletes can take a few minutes; teardown may be slower than deploy.
 
 ## Tutorial docs

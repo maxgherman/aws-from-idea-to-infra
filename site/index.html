@@ -3,142 +3,191 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>PR Preview</title>
+    <title>Asset preview</title>
     <style>
-      :root {
-        color-scheme: light dark;
-      }
-      body {
-        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-        margin: 0;
-        padding: 3rem 1.5rem;
-      }
-      .card {
-        max-width: 52rem;
-        margin: 0 auto;
-        border: 1px solid rgba(127, 127, 127, 0.35);
-        border-radius: 14px;
-        padding: 1.25rem;
-      }
-      h1 {
-        margin: 0 0 0.5rem;
-        font-size: 1.6rem;
-      }
-      p {
-        margin: 0.5rem 0;
-        line-height: 1.5;
-      }
-      code {
-        padding: 0.15rem 0.35rem;
-        border-radius: 6px;
-        background: rgba(127, 127, 127, 0.2);
-      }
-      .muted {
-        opacity: 0.75;
-      }
-      .row {
-        display: flex;
-        gap: 0.75rem;
-        flex-wrap: wrap;
-        margin-top: 1rem;
-      }
-      button {
-        border: 0;
-        border-radius: 999px;
-        padding: 0.65rem 1rem;
-        cursor: pointer;
-      }
-      pre {
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-        padding: 0.9rem;
-        border-radius: 10px;
-        background: rgba(127, 127, 127, 0.12);
-      }
-      input {
-        width: 100%;
-        box-sizing: border-box;
-        padding: 0.7rem 0.85rem;
-        border: 1px solid rgba(127, 127, 127, 0.35);
-        border-radius: 10px;
-        background: transparent;
-      }
-      label {
-        display: block;
-        margin-top: 1rem;
-        margin-bottom: 0.4rem;
-      }
+      :root { color-scheme: light dark; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 3rem 1.5rem; }
+      .card { max-width: 46rem; margin: 0 auto; border: 1px solid rgba(127, 127, 127, .35); border-radius: 14px; padding: 1.5rem; }
+      .row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-top: 1rem; }
+      button { border: 0; border-radius: 999px; padding: .65rem 1rem; cursor: pointer; }
+      button:disabled, input:disabled { cursor: not-allowed; opacity: .55; }
+      input { max-width: 100%; }
+      pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: .9rem; border-radius: 10px; background: rgba(127, 127, 127, .12); }
+      img { display: block; max-width: 100%; max-height: 28rem; margin-top: 1rem; border-radius: 10px; }
+      .muted { opacity: .75; }
     </style>
   </head>
   <body>
-    <div class="card">
-      <h1>PR Preview</h1>
-      <p class="muted">Deployed by GitHub Actions via OIDC + CDK.</p>
-      <p>If you can see this page, the static preview is live. This version adds an async path with API Gateway, SQS, Lambda, and a DLQ.</p>
-      <p>Use the buttons below to enqueue a job or send one that intentionally fails so you can observe retries and the DLQ path.</p>
-      <label for="task-name">Task name</label>
-      <input id="task-name" name="task-name" type="text" value="resize-image" />
+    <main class="card">
+      <h1>Asset preview</h1>
+      <p class="muted">Private S3 upload, queue-backed validation, and CloudFront delivery.</p>
       <div class="row">
-        <button id="submit-job" type="button">Submit Job</button>
-        <button id="submit-fail-job" type="button">Submit Failing Job</button>
+        <button id="sign-in" type="button">Sign in</button>
+        <span id="identity">Not signed in.</span>
       </div>
-      <p id="status">Ready.</p>
+      <form id="upload-form">
+        <div class="row">
+          <input id="asset-file" type="file" accept="image/png,image/jpeg" disabled />
+          <button id="upload" type="submit" disabled>Upload image</button>
+        </div>
+      </form>
+      <p id="status">Configure the preview to begin.</p>
       <pre id="output" hidden></pre>
-    </div>
+      <img id="asset" alt="Processed upload" hidden />
+    </main>
+
     <script src="./config.js"></script>
     <script>
-      window.__PREVIEW_JOB_URL__ = window.__PREVIEW_JOB_URL__ || '';
-
+      const config = window.__PREVIEW_CONFIG__ || {};
+      const signInButton = document.getElementById('sign-in');
+      const identity = document.getElementById('identity');
+      const form = document.getElementById('upload-form');
+      const fileInput = document.getElementById('asset-file');
+      const uploadButton = document.getElementById('upload');
       const status = document.getElementById('status');
       const output = document.getElementById('output');
-      const taskName = document.getElementById('task-name');
-      const submitJobButton = document.getElementById('submit-job');
-      const submitFailJobButton = document.getElementById('submit-fail-job');
-      const jobUrl = window.__PREVIEW_JOB_URL__;
+      const image = document.getElementById('asset');
+      let idToken = '';
 
-      if (!jobUrl) {
-        submitJobButton.disabled = true;
-        submitFailJobButton.disabled = true;
-        status.textContent = 'Job URL is not configured.';
-      }
+      const redirectUri = `${window.location.origin}${window.location.pathname}`;
+      const base64url = (bytes) => btoa(String.fromCharCode(...bytes))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+      const random = () => base64url(crypto.getRandomValues(new Uint8Array(32)));
+      const configured = () => config.apiBaseUrl && config.userPoolClientId && config.userPoolHostedUiUrl;
 
-      const submitJob = async ({ fail }) => {
-        status.textContent = fail ? 'Submitting failing job...' : 'Submitting job...';
-        output.hidden = true;
-
-        try {
-          const response = await fetch(jobUrl, {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              accept: 'application/json',
-            },
-            body: JSON.stringify({
-              task: taskName.value.trim() || 'demo-job',
-              fail,
-            }),
-          });
-
-          const data = await response.json();
-
-          if (!response.ok) {
-            throw new Error(data?.error || `HTTP ${response.status}`);
-          }
-
-          status.textContent = fail
-            ? 'Failing job queued. Watch retries and the DLQ.'
-            : 'Job queued successfully.';
-          output.textContent = JSON.stringify(data, null, 2);
-          output.hidden = false;
-        } catch (error) {
-          status.textContent = `Request failed: ${error.message}`;
-          output.textContent = '';
-          output.hidden = true;
-        }
+      const show = (value) => {
+        output.textContent = JSON.stringify(value, null, 2);
+        output.hidden = false;
       };
 
-      submitJobButton.addEventListener('click', () => submitJob({ fail: false }));
-      submitFailJobButton.addEventListener('click', () => submitJob({ fail: true }));
+      const enableUpload = () => {
+        fileInput.disabled = false;
+        uploadButton.disabled = false;
+        signInButton.hidden = true;
+        identity.textContent = 'Signed in.';
+        status.textContent = 'Select a PNG or JPEG under 10 MB.';
+      };
+
+      const startSignIn = async () => {
+        const verifier = random();
+        const state = random();
+        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+        sessionStorage.setItem('pkce-verifier', verifier);
+        sessionStorage.setItem('oauth-state', state);
+
+        const url = new URL('oauth2/authorize', config.userPoolHostedUiUrl);
+        url.search = new URLSearchParams({
+          client_id: config.userPoolClientId,
+          response_type: 'code',
+          scope: 'openid email',
+          redirect_uri: redirectUri,
+          state,
+          code_challenge: base64url(new Uint8Array(digest)),
+          code_challenge_method: 'S256',
+        });
+        window.location.assign(url);
+      };
+
+      const completeSignIn = async () => {
+        const params = new URLSearchParams(window.location.search);
+        const code = params.get('code');
+        if (!code) return false;
+        if (params.get('state') !== sessionStorage.getItem('oauth-state')) {
+          throw new Error('Sign-in state did not match');
+        }
+        const verifier = sessionStorage.getItem('pkce-verifier');
+        if (!verifier) throw new Error('Sign-in verifier is missing');
+
+        const response = await fetch(new URL('oauth2/token', config.userPoolHostedUiUrl), {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'authorization_code',
+            client_id: config.userPoolClientId,
+            code,
+            redirect_uri: redirectUri,
+            code_verifier: verifier,
+          }),
+        });
+        const tokens = await response.json();
+        if (!response.ok || !tokens.id_token) throw new Error(tokens.error_description || 'Sign-in failed');
+
+        sessionStorage.removeItem('pkce-verifier');
+        sessionStorage.removeItem('oauth-state');
+        window.history.replaceState({}, '', redirectUri);
+        idToken = tokens.id_token;
+        return true;
+      };
+
+      const requestUpload = async (file) => {
+        const response = await fetch(`${config.apiBaseUrl}/assets`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${idToken}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ contentType: file.type }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+
+        const upload = new FormData();
+        for (const [name, value] of Object.entries(data.upload.fields)) upload.append(name, value);
+        upload.append('file', file);
+        const put = await fetch(data.upload.url, { method: 'POST', body: upload });
+        if (!put.ok) throw new Error(`S3 upload failed: ${put.status}`);
+        return data.asset.assetId;
+      };
+
+      const waitForAsset = async (assetId) => {
+        for (let attempt = 0; attempt < 30; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          const response = await fetch(`${config.apiBaseUrl}/assets/${encodeURIComponent(assetId)}`, {
+            headers: { authorization: `Bearer ${idToken}` },
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+          show(data.asset);
+          status.textContent = `Asset ${data.asset.assetId}: ${data.asset.status}`;
+          if (data.asset.status === 'ready' || data.asset.status === 'rejected') return data.asset;
+        }
+        throw new Error('The asset did not finish processing in time');
+      };
+
+      signInButton.addEventListener('click', () => startSignIn().catch((error) => { status.textContent = error.message; }));
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const file = fileInput.files?.[0];
+        if (!file) return;
+        image.hidden = true;
+        output.hidden = true;
+        uploadButton.disabled = true;
+        try {
+          status.textContent = 'Requesting a private upload form…';
+          const assetId = await requestUpload(file);
+          status.textContent = `Upload accepted. Processing ${assetId}…`;
+          const asset = await waitForAsset(assetId);
+          if (asset.status === 'ready') {
+            image.src = asset.url;
+            image.hidden = false;
+          }
+        } catch (error) {
+          status.textContent = `Upload failed: ${error.message}`;
+        } finally {
+          uploadButton.disabled = false;
+        }
+      });
+
+      (async () => {
+        if (!configured()) {
+          signInButton.disabled = true;
+          status.textContent = 'Preview configuration is not available yet.';
+          return;
+        }
+        try {
+          if (await completeSignIn()) enableUpload();
+          else status.textContent = 'Sign in to upload an image.';
+        } catch (error) {
+          status.textContent = `Sign-in failed: ${error.message}`;
+        }
+      })();
     </script>
   </body>
 </html>

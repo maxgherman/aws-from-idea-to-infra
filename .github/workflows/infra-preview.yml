@@ -60,16 +60,26 @@ jobs:
       - name: Generate config.js for the preview page
         run: |
           STACK="Stack-PR${PR_NUMBER}"
-          JOB_URL=$(jq -r --arg stack "$STACK" '.[$stack].JobUrl' cdk-outputs.json)
+          API_BASE_URL=$(jq -r --arg stack "$STACK" '.[$stack].AssetApiBaseUrl' cdk-outputs.json)
+          USER_POOL_ID=$(jq -r --arg stack "$STACK" '.[$stack].UserPoolId' cdk-outputs.json)
+          USER_POOL_CLIENT_ID=$(jq -r --arg stack "$STACK" '.[$stack].UserPoolClientId' cdk-outputs.json)
+          USER_POOL_ISSUER=$(jq -r --arg stack "$STACK" '.[$stack].UserPoolIssuer' cdk-outputs.json)
+          USER_POOL_HOSTED_UI_URL=$(jq -r --arg stack "$STACK" '.[$stack].UserPoolHostedUiUrl' cdk-outputs.json)
           BUCKET_NAME=$(jq -r --arg stack "$STACK" '.[$stack].BucketName' cdk-outputs.json)
           DISTRIBUTION_ID=$(jq -r --arg stack "$STACK" '.[$stack].DistributionId' cdk-outputs.json)
 
-          test -n "$JOB_URL" && test "$JOB_URL" != "null"
-          test -n "$BUCKET_NAME" && test "$BUCKET_NAME" != "null"
-          test -n "$DISTRIBUTION_ID" && test "$DISTRIBUTION_ID" != "null"
+          for value in "$API_BASE_URL" "$USER_POOL_ID" "$USER_POOL_CLIENT_ID" "$USER_POOL_ISSUER" "$USER_POOL_HOSTED_UI_URL" "$BUCKET_NAME" "$DISTRIBUTION_ID"; do
+            test -n "$value" && test "$value" != "null"
+          done
 
           cat > site/config.js <<EOF
-          window.__PREVIEW_JOB_URL__ = '${JOB_URL}';
+          window.__PREVIEW_CONFIG__ = {
+            apiBaseUrl: '${API_BASE_URL%/}',
+            userPoolId: '${USER_POOL_ID}',
+            userPoolClientId: '${USER_POOL_CLIENT_ID}',
+            userPoolIssuer: '${USER_POOL_ISSUER}',
+            userPoolHostedUiUrl: '${USER_POOL_HOSTED_UI_URL}'
+          };
           EOF
 
           aws s3 cp site/config.js "s3://${BUCKET_NAME}/config.js" --content-type application/javascript
@@ -90,22 +100,22 @@ jobs:
             const outputs = JSON.parse(fs.readFileSync('cdk-outputs.json', 'utf8'));
             const previewUrl = outputs?.[stackName]?.PreviewUrl;
             const apiUrl = outputs?.[stackName]?.ApiUrl;
-            const jobUrl = outputs?.[stackName]?.JobUrl;
+            const assetApiBaseUrl = outputs?.[stackName]?.AssetApiBaseUrl;
             if (!previewUrl) {
               throw new Error(`Missing PreviewUrl output for stack "${stackName}"`);
             }
             if (!apiUrl) {
               throw new Error(`Missing ApiUrl output for stack "${stackName}"`);
             }
-            if (!jobUrl) {
-              throw new Error(`Missing JobUrl output for stack "${stackName}"`);
+            if (!assetApiBaseUrl) {
+              throw new Error(`Missing AssetApiBaseUrl output for stack "${stackName}"`);
             }
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = context.issue.number;
 
-            const body = `${marker}\nPreview: ${previewUrl}\nAPI: ${apiUrl}\nJobs: ${jobUrl}`;
+            const body = `${marker}\nPreview: ${previewUrl}\nAPI: ${apiUrl}\nAssets: ${assetApiBaseUrl}`;
             const { data: comments } = await github.rest.issues.listComments({
               owner,
               repo,
