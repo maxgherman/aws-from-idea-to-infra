@@ -6,13 +6,13 @@ This repo focuses on two things:
 
 - *Account guardrails*: a dedicated deploy role you assume with MFA, plus an optional AWS Budget.
 - *PR preview infrastructure*: per‑pull‑request ephemeral infra deployed by GitHub Actions via OIDC (no long‑lived AWS keys), and torn down when the PR closes.
-- *Private asset processing*: authenticated browser uploads, private S3 storage, queue-backed validation, DynamoDB metadata, and CloudFront delivery of accepted assets.
+- *Private asset processing*: authenticated browser uploads, private S3 storage, queue-backed validation, DynamoDB metadata, and owner-authorized S3 delivery of accepted assets.
 
 ## Prerequisites
 
 - An AWS account with root locked down (MFA enabled; no root access keys).
 - An IAM user for day‑to‑day work (with MFA) and an AWS CLI profile (example: `admin`).
-- Node.js 18+ and `npm`.
+- Node.js 20+ and `npm`.
 - AWS CDK v2 (`npm i -g aws-cdk@2`).
 - CDK bootstrap completed in the target account/region.
 
@@ -112,7 +112,7 @@ Now: open a PR (from a branch in the same repo, not a fork). The workflow deploy
 
 - The preview stack is intentionally ephemeral: it deletes its user pool, DynamoDB table, queues, and S3 objects when its PR closes.
 - User self-sign-up is disabled. Provision a test user in the deployed preview user pool before using the upload page; this prevents an unauthenticated PR preview from becoming an open registration endpoint.
-- Original uploads remain private. Only an asset that the worker accepts is available through the CloudFront `/assets/*` path.
+- Original and processed assets remain private. An owner can request a five-minute S3 download URL only after the worker accepts an asset.
 - CloudFront deletes can take a few minutes; teardown may be slower than deploy.
 
 ## Tutorial docs

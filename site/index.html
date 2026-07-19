@@ -20,7 +20,7 @@
   <body>
     <main class="card">
       <h1>Asset preview</h1>
-      <p class="muted">Private S3 upload, queue-backed validation, and CloudFront delivery.</p>
+      <p class="muted">Private S3 upload, queue-backed validation, and owner-authorized delivery.</p>
       <div class="row">
         <button id="sign-in" type="button">Sign in</button>
         <span id="identity">Not signed in.</span>
@@ -151,6 +151,20 @@
         throw new Error('The asset did not finish processing in time');
       };
 
+      const requestDelivery = async (assetId) => {
+        const response = await fetch(
+          `${config.apiBaseUrl}/assets/${encodeURIComponent(assetId)}/delivery`,
+          {
+            method: 'POST',
+            headers: { authorization: `Bearer ${idToken}` },
+            cache: 'no-store',
+          },
+        );
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        return data.delivery;
+      };
+
       signInButton.addEventListener('click', () => startSignIn().catch((error) => { status.textContent = error.message; }));
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -165,8 +179,11 @@
           status.textContent = `Upload accepted. Processing ${assetId}…`;
           const asset = await waitForAsset(assetId);
           if (asset.status === 'ready') {
-            image.src = asset.url;
+            status.textContent = `Authorizing delivery for ${asset.assetId}…`;
+            const delivery = await requestDelivery(asset.assetId);
+            image.src = delivery.url;
             image.hidden = false;
+            status.textContent = `Asset ${asset.assetId}: ready`;
           }
         } catch (error) {
           status.textContent = `Upload failed: ${error.message}`;

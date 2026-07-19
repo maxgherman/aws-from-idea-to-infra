@@ -21,10 +21,6 @@ export const handler = async (event: any) => {
     contentType: asset.contentType,
     createdAt: asset.createdAt,
   };
-  if (asset.status === 'ready') {
-    const extension = asset.contentType === 'image/png' ? 'png' : 'jpg';
-    result.url = `${requiredEnv('ASSET_BASE_URL')}/${asset.assetId}.${extension}`;
-  }
   if (asset.status === 'rejected') result.error = asset.error;
 
   return reply(200, { asset: result });

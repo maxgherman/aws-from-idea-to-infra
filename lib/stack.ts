@@ -10,6 +10,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as eventsources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
@@ -72,15 +73,6 @@ export class Stack extends cdk.Stack {
         origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
-      },
-      additionalBehaviors: {
-        '/assets/*': {
-          origin: origins.S3BucketOrigin.withOriginAccessControl(assetBucket, {
-            originPath: '/processed',
-          }),
-          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
-        },
       },
       errorResponses: [
         { httpStatus: 403, responseHttpStatus: 200, responsePagePath: '/index.html' },
@@ -189,7 +181,18 @@ export class Stack extends cdk.Stack {
       memorySize: 256,
       environment: {
         ASSETS_TABLE_NAME: assets.tableName,
-        ASSET_BASE_URL: `https://${distribution.domainName}/assets`,
+      },
+    });
+
+    const createDelivery = new lambdaNodejs.NodejsFunction(this, 'CreateDeliveryFunction', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      entry: join(__dirname, '../lambda/create-delivery/index.ts'),
+      handler: 'handler',
+      timeout: cdk.Duration.seconds(5),
+      memorySize: 256,
+      environment: {
+        ASSETS_TABLE_NAME: assets.tableName,
+        ASSET_BUCKET_NAME: assetBucket.bucketName,
       },
     });
 
@@ -208,6 +211,23 @@ export class Stack extends cdk.Stack {
     assetBucket.grantPut(createUpload);
     assets.grantReadWriteData(createUpload);
     assets.grantReadData(getAsset);
+    assets.grantReadData(createDelivery);
+    createDelivery.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject'],
+      resources: [assetBucket.arnForObjects('processed/assets/*')],
+    }));
+    assetBucket.addToResourcePolicy(new iam.PolicyStatement({
+      sid: 'DenyStaleProcessedAssetSignatures',
+      effect: iam.Effect.DENY,
+      principals: [new iam.AnyPrincipal()],
+      actions: ['s3:GetObject'],
+      resources: [assetBucket.arnForObjects('processed/assets/*')],
+      conditions: {
+        NumericGreaterThan: {
+          's3:signatureAge': 6 * 60 * 1_000,
+        },
+      },
+    }));
     assetBucket.grantReadWrite(worker);
     assets.grantReadWriteData(worker);
     worker.addEventSource(new eventsources.SqsEventSource(assetsQueue, {
@@ -245,6 +265,15 @@ export class Stack extends cdk.Stack {
       integration: new integrations.HttpLambdaIntegration('GetAssetIntegration', getAsset),
       authorizer: userAuthorizer,
     });
+    api.addRoutes({
+      path: '/assets/{assetId}/delivery',
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration(
+        'CreateDeliveryIntegration',
+        createDelivery,
+      ),
+      authorizer: userAuthorizer,
+    });
 
     cdk.Tags.of(this).add('managed-by', 'cdk');
     cdk.Tags.of(this).add('preview', String(isPreview));
@@ -259,9 +288,11 @@ export class Stack extends cdk.Stack {
     cdk.Tags.of(deadLetterQueue).add('resource', 'asset-events-dlq');
     cdk.Tags.of(createUpload).add('resource', 'asset-upload-api');
     cdk.Tags.of(getAsset).add('resource', 'asset-status-api');
+    cdk.Tags.of(createDelivery).add('resource', 'asset-delivery-api');
     cdk.Tags.of(worker).add('resource', 'asset-worker');
 
     new cdk.CfnOutput(this, 'BucketName', { value: siteBucket.bucketName });
+    new cdk.CfnOutput(this, 'AssetBucketName', { value: assetBucket.bucketName });
     new cdk.CfnOutput(this, 'PreviewUrl', {
       value: `https://${distribution.domainName}/?pr=${encodeURIComponent(pr)}`,
     });
