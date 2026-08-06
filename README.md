@@ -6,14 +6,13 @@ This repo focuses on two things:
 
 - *Account guardrails*: a dedicated deploy role you assume with MFA, plus an optional AWS Budget.
 - *PR preview infrastructure*: per‑pull‑request ephemeral infra deployed by GitHub Actions via OIDC (no long‑lived AWS keys), and torn down when the PR closes.
-- *Private asset processing*: authenticated browser uploads, private S3 storage, queue-backed validation, DynamoDB metadata, and owner-authorized S3 delivery of accepted assets.
+- *Private asset processing*: authenticated browser uploads, private S3 storage, queue-buffered Step Functions workflows, DynamoDB metadata, and owner-authorized S3 delivery of accepted assets.
 
 ## Prerequisites
 
 - An AWS account with root locked down (MFA enabled; no root access keys).
 - An IAM user for day‑to‑day work (with MFA) and an AWS CLI profile (example: `admin`).
-- Node.js 20+ and `npm`.
-- AWS CDK v2 (`npm i -g aws-cdk@2`).
+- Node.js 24+ and `npm`.
 - CDK bootstrap completed in the target account/region.
 
 ## What’s in here
@@ -22,7 +21,8 @@ This is a CDK TypeScript app with multiple entrypoints in `bin/`:
 
 - `bin/deploy-role.ts`: creates `CdkDeployerRole` (assumable by an IAM user with MFA) and optionally a monthly AWS Budget.
 - `bin/gha-oidc-role.ts`: creates the GitHub OIDC provider + `GitHubActionsDeployRole` for CI/CD.
-- `bin/preview.ts`: deploys the per‑PR asset preview stack (Cognito, private S3, SQS, Lambda, DynamoDB, CloudFront, and the static site).
+- `bin/auth.ts`: deploys the long-lived Cognito user pool and hosted UI domain shared by previews.
+- `bin/preview.ts`: deploys the per‑PR asset preview stack (Cognito app client, private S3, SQS, Step Functions, Lambda, DynamoDB, CloudFront, and the static site).
 
 Stacks live in `lib/`.
 
@@ -41,7 +41,7 @@ Bootstrap CDK (once per account/region):
 ```bash
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --profile admin)
 REGION=us-east-1
-cdk bootstrap aws://$ACCOUNT_ID/$REGION --profile admin
+npx cdk bootstrap aws://$ACCOUNT_ID/$REGION --profile admin
 ```
 
 ### Create the deploy role (CdkDeployerRole)
@@ -81,6 +81,18 @@ npx cdk deploy GithubOidcRoleStack \
 
 Copy the `RoleArn` output — you’ll use it as `AWS_ROLE_ARN` in GitHub.
 
+### Create shared preview authentication
+
+Deploy the authentication stack once per account and region. The user pool is retained independently of pull-request preview teardown.
+
+```bash
+npx cdk deploy AssetSeriesAuth \
+  --app "npx ts-node bin/auth.ts" \
+  --profile dev
+```
+
+Create one operator-provisioned test user in the `UserPoolId` output. Future previews import this pool and create only their own callback-specific app client.
+
 ## GitHub Actions setup
 
 Workflows live in `.github/workflows/`:
@@ -110,8 +122,9 @@ Now: open a PR (from a branch in the same repo, not a fork). The workflow deploy
 
 ## Preview access and lifecycle
 
-- The preview stack is intentionally ephemeral: it deletes its user pool, DynamoDB table, queues, and S3 objects when its PR closes.
-- User self-sign-up is disabled. Provision a test user in the deployed preview user pool before using the upload page; this prevents an unauthenticated PR preview from becoming an open registration endpoint.
+- The preview stack is intentionally ephemeral: it deletes its Cognito app client, workflow, DynamoDB table, queues, and S3 objects when its PR closes.
+- The shared Cognito pool and its users remain in `AssetSeriesAuth`. User self-sign-up is disabled, so provision the series test user once instead of once per preview.
+- S3 notifications remain buffered in SQS. A starter Lambda creates one Standard Step Functions execution per asset, with explicit validation, transformation, ready, rejected, and failed paths.
 - Original and processed assets remain private. An owner can request a five-minute S3 download URL only after the worker accepts an asset.
 - CloudFront deletes can take a few minutes; teardown may be slower than deploy.
 

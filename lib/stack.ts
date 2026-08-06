@@ -11,11 +11,15 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as eventsources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
+import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import { join } from 'node:path';
+import { authExports } from './auth-stack';
 
 export class Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -29,6 +33,7 @@ export class Stack extends cdk.Stack {
     const reg = this.node.tryGetContext('reg');
     const isPreview = pr !== 'production';
     const cleanupPolicy = isPreview ? cdk.RemovalPolicy.DESTROY : cdk.RemovalPolicy.RETAIN;
+    const lambdaEntry = (name: string) => join(process.cwd(), 'lambda', name, 'index.ts');
 
     const siteBucket = new s3.Bucket(this, 'SiteBucket', {
       autoDeleteObjects: isPreview,
@@ -97,29 +102,12 @@ export class Stack extends cdk.Stack {
       removalPolicy: cleanupPolicy,
     });
 
-    const users = new cognito.UserPool(this, 'Users', {
-      selfSignUpEnabled: false,
-      signInAliases: { email: true },
-      standardAttributes: { email: { required: true, mutable: false } },
-      passwordPolicy: {
-        minLength: 14,
-        requireDigits: true,
-        requireLowercase: true,
-        requireUppercase: true,
-        requireSymbols: true,
-      },
-      accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
-      removalPolicy: cleanupPolicy,
-    });
-
-    const hostedUiDomain = users.addDomain('HostedUiDomain', {
-      cognitoDomain: {
-        domainPrefix: `asset-preview-${pr}-${acct ?? 'local'}-${reg ?? 'local'}`
-          .toLowerCase()
-          .replace(/[^a-z0-9-]/g, '-')
-          .slice(0, 63),
-      },
-    });
+    const users = cognito.UserPool.fromUserPoolId(
+      this,
+      'SharedUsers',
+      cdk.Fn.importValue(authExports.userPoolId),
+    );
+    const hostedUiUrl = cdk.Fn.importValue(authExports.hostedUiUrl);
 
     const webClient = users.addClient('WebClient', {
       oAuth: {
@@ -153,7 +141,7 @@ export class Stack extends cdk.Stack {
     });
 
     const hello = new lambda.Function(this, 'HelloFunction', {
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       handler: 'index.handler',
       code: lambda.Code.fromAsset('lambda/hello'),
       timeout: cdk.Duration.seconds(5),
@@ -162,8 +150,8 @@ export class Stack extends cdk.Stack {
     });
 
     const createUpload = new lambdaNodejs.NodejsFunction(this, 'CreateUploadFunction', {
-      runtime: lambda.Runtime.NODEJS_20_X,
-      entry: join(__dirname, '../lambda/create-upload/index.ts'),
+      runtime: lambda.Runtime.NODEJS_24_X,
+      entry: lambdaEntry('create-upload'),
       handler: 'handler',
       timeout: cdk.Duration.seconds(5),
       memorySize: 256,
@@ -174,8 +162,8 @@ export class Stack extends cdk.Stack {
     });
 
     const getAsset = new lambdaNodejs.NodejsFunction(this, 'GetAssetFunction', {
-      runtime: lambda.Runtime.NODEJS_20_X,
-      entry: join(__dirname, '../lambda/get-asset/index.ts'),
+      runtime: lambda.Runtime.NODEJS_24_X,
+      entry: lambdaEntry('get-asset'),
       handler: 'handler',
       timeout: cdk.Duration.seconds(5),
       memorySize: 256,
@@ -185,8 +173,8 @@ export class Stack extends cdk.Stack {
     });
 
     const createDelivery = new lambdaNodejs.NodejsFunction(this, 'CreateDeliveryFunction', {
-      runtime: lambda.Runtime.NODEJS_20_X,
-      entry: join(__dirname, '../lambda/create-delivery/index.ts'),
+      runtime: lambda.Runtime.NODEJS_24_X,
+      entry: lambdaEntry('create-delivery'),
       handler: 'handler',
       timeout: cdk.Duration.seconds(5),
       memorySize: 256,
@@ -196,16 +184,55 @@ export class Stack extends cdk.Stack {
       },
     });
 
-    const worker = new lambdaNodejs.NodejsFunction(this, 'AssetWorkerFunction', {
-      runtime: lambda.Runtime.NODEJS_20_X,
-      entry: join(__dirname, '../lambda/asset-worker/index.ts'),
+    const validateAsset = new lambdaNodejs.NodejsFunction(this, 'ValidateAssetFunction', {
+      runtime: lambda.Runtime.NODEJS_24_X,
+      entry: lambdaEntry('validate-asset'),
       handler: 'handler',
-      timeout: cdk.Duration.seconds(30),
+      timeout: cdk.Duration.seconds(15),
       memorySize: 512,
       environment: {
         ASSET_BUCKET_NAME: assetBucket.bucketName,
         ASSETS_TABLE_NAME: assets.tableName,
       },
+    });
+
+    const transformAsset = new lambdaNodejs.NodejsFunction(this, 'TransformAssetFunction', {
+      runtime: lambda.Runtime.NODEJS_24_X,
+      entry: lambdaEntry('transform-asset'),
+      handler: 'handler',
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 256,
+      environment: { ASSET_BUCKET_NAME: assetBucket.bucketName },
+    });
+
+    const completeAsset = new lambdaNodejs.NodejsFunction(this, 'CompleteAssetFunction', {
+      runtime: lambda.Runtime.NODEJS_24_X,
+      entry: lambdaEntry('complete-asset'),
+      handler: 'handler',
+      timeout: cdk.Duration.seconds(5),
+      memorySize: 256,
+      environment: { ASSETS_TABLE_NAME: assets.tableName },
+    });
+
+    const rejectAsset = new lambdaNodejs.NodejsFunction(this, 'RejectAssetFunction', {
+      runtime: lambda.Runtime.NODEJS_24_X,
+      entry: lambdaEntry('reject-asset'),
+      handler: 'handler',
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 256,
+      environment: {
+        ASSET_BUCKET_NAME: assetBucket.bucketName,
+        ASSETS_TABLE_NAME: assets.tableName,
+      },
+    });
+
+    const recordFailure = new lambdaNodejs.NodejsFunction(this, 'RecordFailureFunction', {
+      runtime: lambda.Runtime.NODEJS_24_X,
+      entry: lambdaEntry('record-failure'),
+      handler: 'handler',
+      timeout: cdk.Duration.seconds(5),
+      memorySize: 256,
+      environment: { ASSETS_TABLE_NAME: assets.tableName },
     });
 
     assetBucket.grantPut(createUpload);
@@ -228,9 +255,105 @@ export class Stack extends cdk.Stack {
         },
       },
     }));
-    assetBucket.grantReadWrite(worker);
-    assets.grantReadWriteData(worker);
-    worker.addEventSource(new eventsources.SqsEventSource(assetsQueue, {
+    validateAsset.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
+      resources: [assets.tableArn],
+    }));
+    validateAsset.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject'],
+      resources: [assetBucket.arnForObjects('uploads/originals/*')],
+    }));
+    transformAsset.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject'],
+      resources: [assetBucket.arnForObjects('uploads/originals/*')],
+    }));
+    transformAsset.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:PutObject'],
+      resources: [assetBucket.arnForObjects('processed/assets/*')],
+    }));
+    completeAsset.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:UpdateItem'],
+      resources: [assets.tableArn],
+    }));
+    rejectAsset.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:UpdateItem'],
+      resources: [assets.tableArn],
+    }));
+    rejectAsset.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:DeleteObject'],
+      resources: [assetBucket.arnForObjects('uploads/originals/*')],
+    }));
+    recordFailure.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:UpdateItem'],
+      resources: [assets.tableArn],
+    }));
+
+    const lambdaTask = (id: string, handler: lambda.IFunction) => new tasks.LambdaInvoke(this, id, {
+      lambdaFunction: handler,
+      payloadResponseOnly: true,
+    });
+    const invokeValidate = lambdaTask('Validate upload', validateAsset);
+    const invokeTransform = lambdaTask('Transform asset', transformAsset);
+    const invokeComplete = lambdaTask('Mark asset ready', completeAsset);
+    const invokeReject = lambdaTask('Reject invalid asset', rejectAsset);
+    const invokeRecordFailure = lambdaTask('Record processing failure', recordFailure);
+    const ready = new sfn.Succeed(this, 'Asset ready');
+    const rejected = new sfn.Succeed(this, 'Asset rejected');
+    const failed = new sfn.Fail(this, 'Asset processing failed', {
+      cause: 'Asset processing exhausted its retries',
+    });
+    invokeRecordFailure.addRetry({
+      errors: ['States.TaskFailed'],
+      interval: cdk.Duration.seconds(2),
+      maxAttempts: 3,
+      backoffRate: 2,
+    });
+    invokeRecordFailure.next(failed);
+
+    for (const task of [invokeValidate, invokeTransform, invokeComplete, invokeReject]) {
+      task.addRetry({
+        errors: ['States.TaskFailed'],
+        interval: cdk.Duration.seconds(2),
+        maxAttempts: 3,
+        backoffRate: 2,
+      });
+      task.addCatch(invokeRecordFailure, { resultPath: '$.failure' });
+    }
+
+    const definition = invokeValidate.next(
+      new sfn.Choice(this, 'Bytes match declared image type?')
+        .when(
+          sfn.Condition.booleanEquals('$.valid', true),
+          invokeTransform.next(invokeComplete).next(ready),
+        )
+        .otherwise(invokeReject.next(rejected)),
+    );
+
+    const workflowLogGroup = new logs.LogGroup(this, 'AssetWorkflowLogs', {
+      retention: isPreview ? logs.RetentionDays.ONE_WEEK : logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cleanupPolicy,
+    });
+    const assetWorkflow = new sfn.StateMachine(this, 'AssetWorkflow', {
+      definitionBody: sfn.DefinitionBody.fromChainable(definition),
+      stateMachineType: sfn.StateMachineType.STANDARD,
+      timeout: cdk.Duration.minutes(5),
+      logs: {
+        destination: workflowLogGroup,
+        level: sfn.LogLevel.ERROR,
+        includeExecutionData: true,
+      },
+    });
+
+    const workflowStarter = new lambdaNodejs.NodejsFunction(this, 'WorkflowStarterFunction', {
+      runtime: lambda.Runtime.NODEJS_24_X,
+      entry: lambdaEntry('workflow-starter'),
+      handler: 'handler',
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 256,
+      environment: { STATE_MACHINE_ARN: assetWorkflow.stateMachineArn },
+    });
+    assetWorkflow.grantStartExecution(workflowStarter);
+    workflowStarter.addEventSource(new eventsources.SqsEventSource(assetsQueue, {
       batchSize: 5,
       reportBatchItemFailures: true,
     }));
@@ -289,7 +412,10 @@ export class Stack extends cdk.Stack {
     cdk.Tags.of(createUpload).add('resource', 'asset-upload-api');
     cdk.Tags.of(getAsset).add('resource', 'asset-status-api');
     cdk.Tags.of(createDelivery).add('resource', 'asset-delivery-api');
-    cdk.Tags.of(worker).add('resource', 'asset-worker');
+    cdk.Tags.of(assetWorkflow).add('resource', 'asset-workflow');
+    cdk.Tags.of(workflowStarter).add('resource', 'workflow-starter');
+    cdk.Tags.of(validateAsset).add('resource', 'asset-validation');
+    cdk.Tags.of(transformAsset).add('resource', 'asset-transformation');
 
     new cdk.CfnOutput(this, 'BucketName', { value: siteBucket.bucketName });
     new cdk.CfnOutput(this, 'AssetBucketName', { value: assetBucket.bucketName });
@@ -302,9 +428,10 @@ export class Stack extends cdk.Stack {
     new cdk.CfnOutput(this, 'AssetsTableName', { value: assets.tableName });
     new cdk.CfnOutput(this, 'AssetsQueueName', { value: assetsQueue.queueName });
     new cdk.CfnOutput(this, 'AssetsDeadLetterQueueName', { value: deadLetterQueue.queueName });
+    new cdk.CfnOutput(this, 'AssetWorkflowArn', { value: assetWorkflow.stateMachineArn });
     new cdk.CfnOutput(this, 'UserPoolId', { value: users.userPoolId });
     new cdk.CfnOutput(this, 'UserPoolClientId', { value: webClient.userPoolClientId });
-    new cdk.CfnOutput(this, 'UserPoolHostedUiUrl', { value: hostedUiDomain.baseUrl() });
+    new cdk.CfnOutput(this, 'UserPoolHostedUiUrl', { value: hostedUiUrl });
     new cdk.CfnOutput(this, 'UserPoolIssuer', {
       value: `https://cognito-idp.${this.region}.amazonaws.com/${users.userPoolId}`,
     });

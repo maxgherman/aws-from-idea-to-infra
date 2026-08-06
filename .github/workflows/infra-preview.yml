@@ -22,12 +22,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install deps
-        run: |
-          npm ci
-          npm i -g aws-cdk@2
+        run: npm ci
 
       - name: Test
         run: npm test
@@ -49,7 +47,12 @@ jobs:
 
       - name: Deploy preview stack
         run: |
-          cdk deploy \
+          aws cloudformation describe-stacks \
+            --stack-name AssetSeriesAuth \
+            --query 'Stacks[0].StackStatus' \
+            --output text
+
+          npx cdk deploy \
             -c pr=${PR_NUMBER} \
             -c acct=${ACCOUNT_ID} \
             -c reg=${{ vars.AWS_REGION }} \
@@ -70,8 +73,9 @@ jobs:
           USER_POOL_HOSTED_UI_URL=$(jq -r --arg stack "$STACK" '.[$stack].UserPoolHostedUiUrl' cdk-outputs.json)
           BUCKET_NAME=$(jq -r --arg stack "$STACK" '.[$stack].BucketName' cdk-outputs.json)
           DISTRIBUTION_ID=$(jq -r --arg stack "$STACK" '.[$stack].DistributionId' cdk-outputs.json)
+          ASSET_WORKFLOW_ARN=$(jq -r --arg stack "$STACK" '.[$stack].AssetWorkflowArn' cdk-outputs.json)
 
-          for value in "$API_BASE_URL" "$USER_POOL_ID" "$USER_POOL_CLIENT_ID" "$USER_POOL_ISSUER" "$USER_POOL_HOSTED_UI_URL" "$BUCKET_NAME" "$DISTRIBUTION_ID"; do
+          for value in "$API_BASE_URL" "$USER_POOL_ID" "$USER_POOL_CLIENT_ID" "$USER_POOL_ISSUER" "$USER_POOL_HOSTED_UI_URL" "$BUCKET_NAME" "$DISTRIBUTION_ID" "$ASSET_WORKFLOW_ARN"; do
             test -n "$value" && test "$value" != "null"
           done
 
@@ -104,6 +108,7 @@ jobs:
             const previewUrl = outputs?.[stackName]?.PreviewUrl;
             const apiUrl = outputs?.[stackName]?.ApiUrl;
             const assetApiBaseUrl = outputs?.[stackName]?.AssetApiBaseUrl;
+            const workflowArn = outputs?.[stackName]?.AssetWorkflowArn;
             if (!previewUrl) {
               throw new Error(`Missing PreviewUrl output for stack "${stackName}"`);
             }
@@ -113,12 +118,15 @@ jobs:
             if (!assetApiBaseUrl) {
               throw new Error(`Missing AssetApiBaseUrl output for stack "${stackName}"`);
             }
+            if (!workflowArn) {
+              throw new Error(`Missing AssetWorkflowArn output for stack "${stackName}"`);
+            }
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = context.issue.number;
 
-            const body = `${marker}\nPreview: ${previewUrl}\nAPI: ${apiUrl}\nAssets: ${assetApiBaseUrl}`;
+            const body = `${marker}\nPreview: ${previewUrl}\nAPI: ${apiUrl}\nAssets: ${assetApiBaseUrl}\nWorkflow: ${workflowArn}`;
             const { data: comments } = await github.rest.issues.listComments({
               owner,
               repo,

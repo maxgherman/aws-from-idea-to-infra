@@ -20,12 +20,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '24'
 
       - name: Install deps
-        run: |
-          npm ci
-          npm i -g aws-cdk@2
+        run: npm ci
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -44,7 +42,7 @@ jobs:
 
       - name: Destroy preview stack
         run: |
-          cdk destroy \
+          npx cdk destroy \
             -c pr=${PR_NUMBER} \
             -c acct=${ACCOUNT_ID} \
             -c reg=${{ vars.AWS_REGION }} \

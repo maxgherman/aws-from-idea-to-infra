@@ -21,7 +21,7 @@ export const handler = async (event: any) => {
     contentType: asset.contentType,
     createdAt: asset.createdAt,
   };
-  if (asset.status === 'rejected') result.error = asset.error;
+  if (asset.status === 'rejected' || asset.status === 'failed') result.error = asset.error;
 
   return reply(200, { asset: result });
 };

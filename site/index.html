@@ -146,7 +146,7 @@
           if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
           show(data.asset);
           status.textContent = `Asset ${data.asset.assetId}: ${data.asset.status}`;
-          if (data.asset.status === 'ready' || data.asset.status === 'rejected') return data.asset;
+          if (['ready', 'rejected', 'failed'].includes(data.asset.status)) return data.asset;
         }
         throw new Error('The asset did not finish processing in time');
       };
