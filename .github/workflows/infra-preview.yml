@@ -74,8 +74,10 @@ jobs:
           BUCKET_NAME=$(jq -r --arg stack "$STACK" '.[$stack].BucketName' cdk-outputs.json)
           DISTRIBUTION_ID=$(jq -r --arg stack "$STACK" '.[$stack].DistributionId' cdk-outputs.json)
           ASSET_WORKFLOW_ARN=$(jq -r --arg stack "$STACK" '.[$stack].AssetWorkflowArn' cdk-outputs.json)
+          ASSET_LIFECYCLE_EVENT_BUS_NAME=$(jq -r --arg stack "$STACK" '.[$stack].AssetLifecycleEventBusName' cdk-outputs.json)
+          ASSET_LIFECYCLE_LOG_GROUP_NAME=$(jq -r --arg stack "$STACK" '.[$stack].AssetLifecycleLogGroupName' cdk-outputs.json)
 
-          for value in "$API_BASE_URL" "$USER_POOL_ID" "$USER_POOL_CLIENT_ID" "$USER_POOL_ISSUER" "$USER_POOL_HOSTED_UI_URL" "$BUCKET_NAME" "$DISTRIBUTION_ID" "$ASSET_WORKFLOW_ARN"; do
+          for value in "$API_BASE_URL" "$USER_POOL_ID" "$USER_POOL_CLIENT_ID" "$USER_POOL_ISSUER" "$USER_POOL_HOSTED_UI_URL" "$BUCKET_NAME" "$DISTRIBUTION_ID" "$ASSET_WORKFLOW_ARN" "$ASSET_LIFECYCLE_EVENT_BUS_NAME" "$ASSET_LIFECYCLE_LOG_GROUP_NAME"; do
             test -n "$value" && test "$value" != "null"
           done
 
@@ -109,6 +111,8 @@ jobs:
             const apiUrl = outputs?.[stackName]?.ApiUrl;
             const assetApiBaseUrl = outputs?.[stackName]?.AssetApiBaseUrl;
             const workflowArn = outputs?.[stackName]?.AssetWorkflowArn;
+            const eventBusName = outputs?.[stackName]?.AssetLifecycleEventBusName;
+            const lifecycleLogGroupName = outputs?.[stackName]?.AssetLifecycleLogGroupName;
             if (!previewUrl) {
               throw new Error(`Missing PreviewUrl output for stack "${stackName}"`);
             }
@@ -121,12 +125,18 @@ jobs:
             if (!workflowArn) {
               throw new Error(`Missing AssetWorkflowArn output for stack "${stackName}"`);
             }
+            if (!eventBusName) {
+              throw new Error(`Missing AssetLifecycleEventBusName output for stack "${stackName}"`);
+            }
+            if (!lifecycleLogGroupName) {
+              throw new Error(`Missing AssetLifecycleLogGroupName output for stack "${stackName}"`);
+            }
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = context.issue.number;
 
-            const body = `${marker}\nPreview: ${previewUrl}\nAPI: ${apiUrl}\nAssets: ${assetApiBaseUrl}\nWorkflow: ${workflowArn}`;
+            const body = `${marker}\nPreview: ${previewUrl}\nAPI: ${apiUrl}\nAssets: ${assetApiBaseUrl}\nWorkflow: ${workflowArn}\nEvent bus: ${eventBusName}\nLifecycle log: ${lifecycleLogGroupName}`;
             const { data: comments } = await github.rest.issues.listComments({
               owner,
               repo,

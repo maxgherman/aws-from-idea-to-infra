@@ -75,3 +75,61 @@ test('provisions a Standard workflow and an SQS starter', () => {
     FunctionResponseTypes: ['ReportBatchItemFailures'],
   });
 });
+
+test('publishes versioned lifecycle events to an audited custom bus', () => {
+  const app = new App({ context: { pr: '123', acct: '111111111111', reg: 'us-east-1' } });
+  const preview = Template.fromStack(new PreviewStack(app, 'EventBridgeTest', {
+    env: { account: '111111111111', region: 'us-east-1' },
+  }));
+
+  preview.resourceCountIs('AWS::Events::EventBus', 1);
+  preview.hasResourceProperties('AWS::Events::Rule', {
+    EventPattern: {
+      source: ['com.example.assets'],
+      'detail-type': ['Asset State Changed'],
+    },
+    State: 'ENABLED',
+    Targets: [Match.objectLike({
+      DeadLetterConfig: Match.objectLike({ Arn: Match.anyValue() }),
+      RetryPolicy: {
+        MaximumEventAgeInSeconds: 86400,
+        MaximumRetryAttempts: 185,
+      },
+    })],
+  });
+  preview.hasResourceProperties('AWS::SQS::QueuePolicy', {
+    PolicyDocument: {
+      Statement: Match.arrayWith([Match.objectLike({
+        Action: 'sqs:SendMessage',
+        Effect: 'Allow',
+        Principal: { Service: 'events.amazonaws.com' },
+        Resource: Match.anyValue(),
+        Condition: {
+          ArnEquals: { 'aws:SourceArn': Match.anyValue() },
+        },
+      })]),
+    },
+  });
+
+  const stateMachines = preview.findResources('AWS::StepFunctions::StateMachine');
+  const definition = JSON.stringify(Object.values(stateMachines)[0].Properties.DefinitionString);
+  assert.equal((definition.match(/events:putEvents/g) ?? []).length, 3);
+  assert.match(definition, /com\.example\.assets/);
+  assert.match(definition, /Asset State Changed/);
+  for (const status of ['ready', 'rejected', 'failed']) {
+    assert.match(definition, new RegExp(`\\\\"status\\\\":\\\\"${status}\\\\"`));
+  }
+
+  const policies = preview.findResources('AWS::IAM::Policy');
+  const eventPublishers = Object.values(policies).filter((policy: any) =>
+    JSON.stringify(policy).includes('events:PutEvents'),
+  );
+  assert.equal(eventPublishers.length, 1);
+  const publisherPolicy: any = eventPublishers[0];
+  const publishStatement = publisherPolicy.Properties.PolicyDocument.Statement.find(
+    (statement: any) => statement.Action === 'events:PutEvents',
+  );
+  assert.notEqual(publishStatement.Resource, '*');
+  assert.match(JSON.stringify(publishStatement.Resource), /AssetLifecycleBus/);
+  assert.match(JSON.stringify(publisherPolicy.Properties.Roles), /AssetWorkflowRole/);
+});

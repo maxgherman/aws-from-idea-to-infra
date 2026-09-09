@@ -6,7 +6,7 @@ This repo focuses on two things:
 
 - *Account guardrails*: a dedicated deploy role you assume with MFA, plus an optional AWS Budget.
 - *PR preview infrastructure*: per‑pull‑request ephemeral infra deployed by GitHub Actions via OIDC (no long‑lived AWS keys), and torn down when the PR closes.
-- *Private asset processing*: authenticated browser uploads, private S3 storage, queue-buffered Step Functions workflows, DynamoDB metadata, and owner-authorized S3 delivery of accepted assets.
+- *Private asset processing*: authenticated browser uploads, private S3 storage, queue-buffered Step Functions workflows, DynamoDB metadata, EventBridge lifecycle events, and owner-authorized S3 delivery of accepted assets.
 
 ## Prerequisites
 
@@ -22,7 +22,7 @@ This is a CDK TypeScript app with multiple entrypoints in `bin/`:
 - `bin/deploy-role.ts`: creates `CdkDeployerRole` (assumable by an IAM user with MFA) and optionally a monthly AWS Budget.
 - `bin/gha-oidc-role.ts`: creates the GitHub OIDC provider + `GitHubActionsDeployRole` for CI/CD.
 - `bin/auth.ts`: deploys the long-lived Cognito user pool and hosted UI domain shared by previews.
-- `bin/preview.ts`: deploys the per‑PR asset preview stack (Cognito app client, private S3, SQS, Step Functions, Lambda, DynamoDB, CloudFront, and the static site).
+- `bin/preview.ts`: deploys the per‑PR asset preview stack (Cognito app client, private S3, SQS, Step Functions, EventBridge, Lambda, DynamoDB, CloudFront, and the static site).
 
 Stacks live in `lib/`.
 
@@ -125,6 +125,7 @@ Now: open a PR (from a branch in the same repo, not a fork). The workflow deploy
 - The preview stack is intentionally ephemeral: it deletes its Cognito app client, workflow, DynamoDB table, queues, and S3 objects when its PR closes.
 - The shared Cognito pool and its users remain in `AssetSeriesAuth`. User self-sign-up is disabled, so provision the series test user once instead of once per preview.
 - S3 notifications remain buffered in SQS. A starter Lambda creates one Standard Step Functions execution per asset, with explicit validation, transformation, ready, rejected, and failed paths.
+- Terminal workflow paths publish versioned `Asset State Changed` events to a custom EventBridge bus. A filtered rule retains an operator-facing audit stream in CloudWatch Logs and sends exhausted target deliveries to a separate SQS dead-letter queue.
 - Original and processed assets remain private. An owner can request a five-minute S3 download URL only after the worker accepts an asset.
 - CloudFront deletes can take a few minutes; teardown may be slower than deploy.
 
