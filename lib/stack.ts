@@ -7,6 +7,8 @@ import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as eventsources from 'aws-cdk-lib/aws-lambda-event-sources';
@@ -139,6 +141,45 @@ export class Stack extends cdk.Stack {
         maxReceiveCount: 3,
       },
     });
+
+    const lifecycleDeliveryDeadLetterQueue = new sqs.Queue(
+      this,
+      'LifecycleDeliveryDeadLetterQueue',
+      {
+        encryption: sqs.QueueEncryption.SQS_MANAGED,
+        retentionPeriod: cdk.Duration.days(14),
+      },
+    );
+
+    const lifecycleBus = new events.EventBus(this, 'AssetLifecycleBus', {
+      description: 'Application events emitted by the asset processing workflow',
+    });
+    const lifecycleLogGroup = new logs.LogGroup(this, 'AssetLifecycleEvents', {
+      retention: isPreview ? logs.RetentionDays.ONE_WEEK : logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cleanupPolicy,
+    });
+    const lifecycleAuditRule = new events.Rule(this, 'AssetLifecycleAuditRule', {
+      eventBus: lifecycleBus,
+      description: 'Retain asset lifecycle events for operator inspection',
+      eventPattern: {
+        source: ['com.example.assets'],
+        detailType: ['Asset State Changed'],
+      },
+    });
+    lifecycleDeliveryDeadLetterQueue.addToResourcePolicy(new iam.PolicyStatement({
+      principals: [new iam.ServicePrincipal('events.amazonaws.com')],
+      actions: ['sqs:SendMessage'],
+      resources: [lifecycleDeliveryDeadLetterQueue.queueArn],
+      conditions: {
+        ArnEquals: { 'aws:SourceArn': lifecycleAuditRule.ruleArn },
+      },
+    }));
+    lifecycleAuditRule.addTarget(new targets.CloudWatchLogGroup(lifecycleLogGroup, {
+      deadLetterQueue: lifecycleDeliveryDeadLetterQueue,
+      maxEventAge: cdk.Duration.hours(24),
+      retryAttempts: 185,
+      installLatestAwsSdk: false,
+    }));
 
     const hello = new lambda.Function(this, 'HelloFunction', {
       runtime: lambda.Runtime.NODEJS_24_X,
@@ -297,6 +338,38 @@ export class Stack extends cdk.Stack {
     const invokeComplete = lambdaTask('Mark asset ready', completeAsset);
     const invokeReject = lambdaTask('Reject invalid asset', rejectAsset);
     const invokeRecordFailure = lambdaTask('Record processing failure', recordFailure);
+    const publishLifecycleEvent = (
+      id: string,
+      detail: Record<string, unknown>,
+    ) => new tasks.EventBridgePutEvents(this, id, {
+      entries: [{
+        eventBus: lifecycleBus,
+        source: 'com.example.assets',
+        detailType: 'Asset State Changed',
+        detail: sfn.TaskInput.fromObject(detail),
+      }],
+      resultPath: sfn.JsonPath.DISCARD,
+    });
+    const publishReady = publishLifecycleEvent('Publish asset ready', {
+      schemaVersion: '1',
+      assetId: sfn.JsonPath.stringAt('$.assetId'),
+      status: 'ready',
+      contentType: sfn.JsonPath.stringAt('$.contentType'),
+      outputKey: sfn.JsonPath.stringAt('$.outputKey'),
+    });
+    const publishRejected = publishLifecycleEvent('Publish asset rejected', {
+      schemaVersion: '1',
+      assetId: sfn.JsonPath.stringAt('$.assetId'),
+      status: 'rejected',
+      contentType: sfn.JsonPath.stringAt('$.contentType'),
+      reason: sfn.JsonPath.stringAt('$.reason'),
+    });
+    const publishFailed = publishLifecycleEvent('Publish asset failed', {
+      schemaVersion: '1',
+      assetId: sfn.JsonPath.stringAt('$.assetId'),
+      status: 'failed',
+      reason: 'Processing failed; inspect the Step Functions execution history',
+    });
     const ready = new sfn.Succeed(this, 'Asset ready');
     const rejected = new sfn.Succeed(this, 'Asset rejected');
     const failed = new sfn.Fail(this, 'Asset processing failed', {
@@ -308,7 +381,15 @@ export class Stack extends cdk.Stack {
       maxAttempts: 3,
       backoffRate: 2,
     });
-    invokeRecordFailure.next(failed);
+    for (const task of [publishReady, publishRejected, publishFailed]) {
+      task.addRetry({
+        errors: ['States.TaskFailed'],
+        interval: cdk.Duration.seconds(2),
+        maxAttempts: 3,
+        backoffRate: 2,
+      });
+    }
+    invokeRecordFailure.next(publishFailed).next(failed);
 
     for (const task of [invokeValidate, invokeTransform, invokeComplete, invokeReject]) {
       task.addRetry({
@@ -324,9 +405,9 @@ export class Stack extends cdk.Stack {
       new sfn.Choice(this, 'Bytes match declared image type?')
         .when(
           sfn.Condition.booleanEquals('$.valid', true),
-          invokeTransform.next(invokeComplete).next(ready),
+          invokeTransform.next(invokeComplete).next(publishReady).next(ready),
         )
-        .otherwise(invokeReject.next(rejected)),
+        .otherwise(invokeReject.next(publishRejected).next(rejected)),
     );
 
     const workflowLogGroup = new logs.LogGroup(this, 'AssetWorkflowLogs', {
@@ -409,6 +490,12 @@ export class Stack extends cdk.Stack {
     cdk.Tags.of(assets).add('resource', 'asset-metadata');
     cdk.Tags.of(assetsQueue).add('resource', 'asset-events-queue');
     cdk.Tags.of(deadLetterQueue).add('resource', 'asset-events-dlq');
+    cdk.Tags.of(lifecycleBus).add('resource', 'asset-lifecycle-bus');
+    cdk.Tags.of(lifecycleLogGroup).add('resource', 'asset-lifecycle-audit');
+    cdk.Tags.of(lifecycleDeliveryDeadLetterQueue).add(
+      'resource',
+      'asset-lifecycle-delivery-dlq',
+    );
     cdk.Tags.of(createUpload).add('resource', 'asset-upload-api');
     cdk.Tags.of(getAsset).add('resource', 'asset-status-api');
     cdk.Tags.of(createDelivery).add('resource', 'asset-delivery-api');
@@ -429,6 +516,15 @@ export class Stack extends cdk.Stack {
     new cdk.CfnOutput(this, 'AssetsQueueName', { value: assetsQueue.queueName });
     new cdk.CfnOutput(this, 'AssetsDeadLetterQueueName', { value: deadLetterQueue.queueName });
     new cdk.CfnOutput(this, 'AssetWorkflowArn', { value: assetWorkflow.stateMachineArn });
+    new cdk.CfnOutput(this, 'AssetLifecycleEventBusName', {
+      value: lifecycleBus.eventBusName,
+    });
+    new cdk.CfnOutput(this, 'AssetLifecycleLogGroupName', {
+      value: lifecycleLogGroup.logGroupName,
+    });
+    new cdk.CfnOutput(this, 'AssetLifecycleDeliveryDeadLetterQueueName', {
+      value: lifecycleDeliveryDeadLetterQueue.queueName,
+    });
     new cdk.CfnOutput(this, 'UserPoolId', { value: users.userPoolId });
     new cdk.CfnOutput(this, 'UserPoolClientId', { value: webClient.userPoolClientId });
     new cdk.CfnOutput(this, 'UserPoolHostedUiUrl', { value: hostedUiUrl });
