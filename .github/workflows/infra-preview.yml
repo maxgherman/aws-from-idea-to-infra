@@ -4,6 +4,10 @@ on:
   pull_request:
     types: [opened, reopened, synchronize]
 
+concurrency:
+  group: pr-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   id-token: write   # for OIDC
   contents: read
@@ -19,6 +23,19 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify PR is still open
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_STATE=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+            --jq '.state')
+
+          if [[ "$PR_STATE" != "open" ]]; then
+            echo "::error::PR ${PR_NUMBER} is ${PR_STATE}; refusing to deploy its preview stack."
+            exit 1
+          fi
 
       - uses: actions/setup-node@v4
         with:
