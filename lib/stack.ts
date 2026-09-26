@@ -13,10 +13,13 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaNodejs from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as eventsources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
@@ -180,6 +183,93 @@ export class Stack extends cdk.Stack {
       retryAttempts: 185,
       installLatestAwsSdk: false,
     }));
+
+    const notificationKey = new kms.Key(this, 'AssetNotificationKey', {
+      enableKeyRotation: true,
+      pendingWindow: cdk.Duration.days(7),
+      removalPolicy: cleanupPolicy,
+    });
+    notificationKey.addToResourcePolicy(new iam.PolicyStatement({
+      principals: [new iam.ServicePrincipal('events.amazonaws.com')],
+      actions: ['kms:Decrypt', 'kms:GenerateDataKey'],
+      resources: ['*'],
+    }));
+
+    const notificationTopic = new sns.Topic(this, 'AssetNotificationTopic', {
+      displayName: 'Asset lifecycle notifications',
+      masterKey: notificationKey,
+    });
+    const notificationRule = new events.Rule(this, 'AssetNotificationRule', {
+      eventBus: lifecycleBus,
+      description: 'Fan out terminal asset events to notification subscribers',
+      eventPattern: {
+        source: ['com.example.assets'],
+        detailType: ['Asset State Changed'],
+        detail: { status: ['ready', 'rejected', 'failed'] },
+      },
+    });
+    const notificationRuleDeliveryDeadLetterQueue = new sqs.Queue(
+      this,
+      'NotificationRuleDeliveryDeadLetterQueue',
+      {
+        encryption: sqs.QueueEncryption.SQS_MANAGED,
+        retentionPeriod: cdk.Duration.days(14),
+      },
+    );
+    notificationRule.addTarget(new targets.SnsTopic(notificationTopic, {
+      deadLetterQueue: notificationRuleDeliveryDeadLetterQueue,
+      maxEventAge: cdk.Duration.hours(24),
+      retryAttempts: 185,
+    }));
+
+    const integrationQueue = new sqs.Queue(this, 'AssetNotificationIntegrationQueue', {
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      retentionPeriod: cdk.Duration.days(4),
+    });
+    const integrationDeliveryDeadLetterQueue = new sqs.Queue(
+      this,
+      'IntegrationSubscriptionDeadLetterQueue',
+      {
+        encryption: sqs.QueueEncryption.SQS_MANAGED,
+        retentionPeriod: cdk.Duration.days(14),
+      },
+    );
+    notificationTopic.addSubscription(new subscriptions.SqsSubscription(
+      integrationQueue,
+      {
+        rawMessageDelivery: true,
+        deadLetterQueue: integrationDeliveryDeadLetterQueue,
+      },
+    ));
+
+    const notificationEmail = this.node.tryGetContext('notificationEmail');
+    let emailDeliveryDeadLetterQueue: sqs.Queue | undefined;
+    if (notificationEmail) {
+      emailDeliveryDeadLetterQueue = new sqs.Queue(
+        this,
+        'EmailSubscriptionDeadLetterQueue',
+        {
+          encryption: sqs.QueueEncryption.SQS_MANAGED,
+          retentionPeriod: cdk.Duration.days(14),
+        },
+      );
+      notificationTopic.addSubscription(new subscriptions.EmailSubscription(
+        String(notificationEmail),
+        {
+          json: true,
+          deadLetterQueue: emailDeliveryDeadLetterQueue,
+          filterPolicyWithMessageBody: {
+            detail: sns.FilterOrPolicy.policy({
+              status: sns.FilterOrPolicy.filter(
+                sns.SubscriptionFilter.stringFilter({
+                  allowlist: ['rejected', 'failed'],
+                }),
+              ),
+            }),
+          },
+        },
+      ));
+    }
 
     const hello = new lambda.Function(this, 'HelloFunction', {
       runtime: lambda.Runtime.NODEJS_24_X,
@@ -496,6 +586,24 @@ export class Stack extends cdk.Stack {
       'resource',
       'asset-lifecycle-delivery-dlq',
     );
+    cdk.Tags.of(notificationKey).add('resource', 'asset-notification-key');
+    cdk.Tags.of(notificationTopic).add('resource', 'asset-notification-topic');
+    cdk.Tags.of(notificationRule).add('resource', 'asset-notification-rule');
+    cdk.Tags.of(notificationRuleDeliveryDeadLetterQueue).add(
+      'resource',
+      'asset-notification-rule-delivery-dlq',
+    );
+    cdk.Tags.of(integrationQueue).add('resource', 'asset-notification-integration-queue');
+    cdk.Tags.of(integrationDeliveryDeadLetterQueue).add(
+      'resource',
+      'asset-notification-integration-delivery-dlq',
+    );
+    if (emailDeliveryDeadLetterQueue) {
+      cdk.Tags.of(emailDeliveryDeadLetterQueue).add(
+        'resource',
+        'asset-notification-email-delivery-dlq',
+      );
+    }
     cdk.Tags.of(createUpload).add('resource', 'asset-upload-api');
     cdk.Tags.of(getAsset).add('resource', 'asset-status-api');
     cdk.Tags.of(createDelivery).add('resource', 'asset-delivery-api');
@@ -525,6 +633,23 @@ export class Stack extends cdk.Stack {
     new cdk.CfnOutput(this, 'AssetLifecycleDeliveryDeadLetterQueueName', {
       value: lifecycleDeliveryDeadLetterQueue.queueName,
     });
+    new cdk.CfnOutput(this, 'AssetNotificationTopicArn', {
+      value: notificationTopic.topicArn,
+    });
+    new cdk.CfnOutput(this, 'AssetNotificationIntegrationQueueName', {
+      value: integrationQueue.queueName,
+    });
+    new cdk.CfnOutput(this, 'AssetNotificationRuleDeadLetterQueueName', {
+      value: notificationRuleDeliveryDeadLetterQueue.queueName,
+    });
+    new cdk.CfnOutput(this, 'AssetNotificationSqsDeadLetterQueueName', {
+      value: integrationDeliveryDeadLetterQueue.queueName,
+    });
+    if (emailDeliveryDeadLetterQueue) {
+      new cdk.CfnOutput(this, 'AssetNotificationEmailDeadLetterQueueName', {
+        value: emailDeliveryDeadLetterQueue.queueName,
+      });
+    }
     new cdk.CfnOutput(this, 'UserPoolId', { value: users.userPoolId });
     new cdk.CfnOutput(this, 'UserPoolClientId', { value: webClient.userPoolClientId });
     new cdk.CfnOutput(this, 'UserPoolHostedUiUrl', { value: hostedUiUrl });

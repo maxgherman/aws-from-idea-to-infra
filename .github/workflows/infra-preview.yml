@@ -46,11 +46,18 @@ jobs:
           echo "CDK_DEFAULT_REGION=${{ vars.AWS_REGION }}" >> $GITHUB_ENV
 
       - name: Deploy preview stack
+        env:
+          NOTIFICATION_EMAIL: ${{ secrets.NOTIFICATION_EMAIL }}
         run: |
           aws cloudformation describe-stacks \
             --stack-name AssetSeriesAuth \
             --query 'Stacks[0].StackStatus' \
             --output text
+
+          NOTIFICATION_ARGS=()
+          if [[ -n "$NOTIFICATION_EMAIL" ]]; then
+            NOTIFICATION_ARGS=(-c "notificationEmail=$NOTIFICATION_EMAIL")
+          fi
 
           npx cdk deploy \
             -c pr=${PR_NUMBER} \
@@ -59,6 +66,7 @@ jobs:
             -c repo=${GITHUB_REPOSITORY} \
             -c sha=${GITHUB_SHA} \
             -c run=${GITHUB_RUN_ID} \
+            "${NOTIFICATION_ARGS[@]}" \
             --app "npx ts-node bin/preview.ts" \
             --require-approval never \
             --outputs-file cdk-outputs.json
