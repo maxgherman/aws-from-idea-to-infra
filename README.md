@@ -7,6 +7,7 @@ This repo focuses on two things:
 - *Account guardrails*: a dedicated deploy role you assume with MFA, plus an optional AWS Budget.
 - *PR preview infrastructure*: per‑pull‑request ephemeral infra deployed by GitHub Actions via OIDC (no long‑lived AWS keys), and torn down when the PR closes.
 - *Private asset processing*: authenticated browser uploads, private S3 storage, queue-buffered Step Functions workflows, DynamoDB metadata, EventBridge lifecycle events, and owner-authorized S3 delivery of accepted assets.
+- *Operations*: a CloudWatch dashboard, workflow and queue alarms, audit queries, and a separate encrypted SNS topic for operational alerts.
 
 ## Prerequisites
 
@@ -128,6 +129,16 @@ Now: open a PR (from a branch in the same repo, not a fork). The workflow deploy
 - Terminal workflow paths publish versioned `Asset State Changed` events to a custom EventBridge bus. A filtered rule retains an operator-facing audit stream in CloudWatch Logs and sends exhausted target deliveries to a separate SQS dead-letter queue.
 - Original and processed assets remain private. An owner can request a five-minute S3 download URL only after the worker accepts an asset.
 - CloudFront deletes can take a few minutes; teardown may be slower than deploy.
+
+## CloudWatch operations
+
+Each preview includes the dashboard named by `AssetDashboardName`, an encrypted operational topic in `AssetAlarmTopicArn`, and 11 alarms covering failed/timed-out executions, starter errors/throttles, queue age, four DLQs, and lifecycle SNS delivery failures. `lib/asset-monitoring.ts` owns this configuration; `tests/monitoring.test.ts` checks the synthesized resources.
+
+The optional `notificationEmail` context value adds both the existing filtered lifecycle subscription and a separate, unfiltered operational subscription. Confirm both subscriptions. It also enables the lifecycle email DLQ and its alarm, bringing the total to 12 alarms. The operational topic receives alarm and recovery transitions without sending alarm messages to the lifecycle integration queue.
+
+The integration queue is a demonstration subscriber with no automatic consumer. Drain test messages or expect its one-hour backlog alarm. Alarm periods are five minutes; backlog alarms require two breaching periods. Missing data is non-breaching for idle previews and does not prove end-to-end health. CloudWatch, Logs Insights, SNS, and KMS charges apply per preview.
+
+The `AssetWorkflowFailedAlarmName` output supports a disposable preview notification drill with `aws cloudwatch set-alarm-state`. This verifies the action channel; sending a diagnostic message to an empty preview admission DLQ verifies real metric evaluation. Delete the diagnostic message afterward and verify recovery. Follow the Day Ten article for commands and investigation steps. No AWS deployment is needed to run `npm test`.
 
 ## Tutorial docs
 
