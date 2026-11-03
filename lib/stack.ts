@@ -25,6 +25,7 @@ import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import { join } from 'node:path';
 import { authExports } from './auth-stack';
+import { AssetMonitoring } from './asset-monitoring';
 
 export class Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -567,6 +568,24 @@ export class Stack extends cdk.Stack {
         createDelivery,
       ),
       authorizer: userAuthorizer,
+    });
+
+    new AssetMonitoring(this, 'Monitoring', {
+      workflow: assetWorkflow,
+      starter: workflowStarter,
+      admissionQueue: assetsQueue,
+      integrationQueue,
+      deadLetterQueues: {
+        Admission: deadLetterQueue,
+        LifecycleAudit: lifecycleDeliveryDeadLetterQueue,
+        NotificationRule: notificationRuleDeliveryDeadLetterQueue,
+        IntegrationSubscription: integrationDeliveryDeadLetterQueue,
+        ...(emailDeliveryDeadLetterQueue ? { EmailSubscription: emailDeliveryDeadLetterQueue } : {}),
+      },
+      notificationTopic,
+      notificationKey,
+      lifecycleLogs: lifecycleLogGroup,
+      notificationEmail: notificationEmail ? String(notificationEmail) : undefined,
     });
 
     cdk.Tags.of(this).add('managed-by', 'cdk');

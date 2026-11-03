@@ -17,7 +17,7 @@ test('fans terminal lifecycle events out to durable and filtered subscribers', (
   });
   const preview = Template.fromStack(new PreviewStack(app, 'NotificationsTest', { env }));
 
-  preview.resourceCountIs('AWS::SNS::Topic', 1);
+  preview.resourceCountIs('AWS::SNS::Topic', 2);
   preview.hasResourceProperties('AWS::SNS::Topic', {
     DisplayName: 'Asset lifecycle notifications',
     KmsMasterKeyId: Match.anyValue(),
