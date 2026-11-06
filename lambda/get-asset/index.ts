@@ -21,6 +21,7 @@ export const handler = async (event: any) => {
     contentType: asset.contentType,
     createdAt: asset.createdAt,
   };
+  if (asset.status === 'ready' && asset.analysis) result.analysis = asset.analysis;
   if (asset.status === 'rejected' || asset.status === 'failed') result.error = asset.error;
 
   return reply(200, { asset: result });

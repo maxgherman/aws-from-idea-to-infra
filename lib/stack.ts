@@ -426,9 +426,52 @@ export class Stack extends cdk.Stack {
     });
     const invokeValidate = lambdaTask('Validate upload', validateAsset);
     const invokeTransform = lambdaTask('Transform asset', transformAsset);
+    const analyzeImage = new tasks.CallAwsService(this, 'Analyze image labels', {
+      service: 'rekognition',
+      action: 'detectLabels',
+      parameters: {
+        Image: { S3Object: {
+          Bucket: assetBucket.bucketName,
+          Name: sfn.JsonPath.stringAt('$.outputKey'),
+          Version: sfn.JsonPath.stringAt('$.outputVersion'),
+        } },
+        Features: ['GENERAL_LABELS'],
+        MaxLabels: 10,
+        MinConfidence: 80,
+      },
+      iamAction: 'rekognition:DetectLabels',
+      iamResources: ['*'], // DetectLabels does not support resource-level permissions.
+      resultSelector: {
+        'labels.$': '$.Labels',
+        'modelVersion.$': '$.LabelModelVersion',
+      },
+      resultPath: '$.analysis',
+      taskTimeout: sfn.Timeout.duration(cdk.Duration.seconds(30)),
+    });
+    analyzeImage.addRetry({
+      errors: [
+        'Rekognition.ThrottlingException',
+        'Rekognition.ProvisionedThroughputExceededException',
+        'Rekognition.InternalServerErrorException',
+      ],
+      interval: cdk.Duration.seconds(2),
+      backoffRate: 2,
+      maxAttempts: 3,
+      jitterStrategy: sfn.JitterType.FULL,
+    });
+    const invalidImage = new sfn.Pass(this, 'Explain unsupported image', {
+      result: sfn.Result.fromString('Image cannot be decoded or exceeds image analysis limits'),
+      resultPath: '$.reason',
+    });
+    analyzeImage.addCatch(invalidImage, {
+      errors: ['Rekognition.InvalidImageFormatException', 'Rekognition.ImageTooLargeException'],
+      resultPath: '$.failure',
+    });
     const invokeComplete = lambdaTask('Mark asset ready', completeAsset);
     const invokeReject = lambdaTask('Reject invalid asset', rejectAsset);
     const invokeRecordFailure = lambdaTask('Record processing failure', recordFailure);
+    analyzeImage.addCatch(invokeRecordFailure, { resultPath: '$.failure' });
+    invalidImage.next(invokeReject);
     const publishLifecycleEvent = (
       id: string,
       detail: Record<string, unknown>,
@@ -496,7 +539,7 @@ export class Stack extends cdk.Stack {
       new sfn.Choice(this, 'Bytes match declared image type?')
         .when(
           sfn.Condition.booleanEquals('$.valid', true),
-          invokeTransform.next(invokeComplete).next(publishReady).next(ready),
+          invokeTransform.next(analyzeImage).next(invokeComplete).next(publishReady).next(ready),
         )
         .otherwise(invokeReject.next(publishRejected).next(rejected)),
     );
@@ -515,6 +558,11 @@ export class Stack extends cdk.Stack {
         includeExecutionData: true,
       },
     });
+
+    assetWorkflow.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObjectVersion'],
+      resources: [assetBucket.arnForObjects('processed/assets/*')],
+    }));
 
     const workflowStarter = new lambdaNodejs.NodejsFunction(this, 'WorkflowStarterFunction', {
       runtime: lambda.Runtime.NODEJS_24_X,

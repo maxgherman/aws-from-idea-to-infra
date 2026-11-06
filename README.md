@@ -140,6 +140,16 @@ The integration queue is a demonstration subscriber with no automatic consumer. 
 
 The `AssetWorkflowFailedAlarmName` output supports a disposable preview notification drill with `aws cloudwatch set-alarm-state`. This verifies the action channel; sending a diagnostic message to an empty preview admission DLQ verifies real metric evaluation. Delete the diagnostic message afterward and verify recovery. Follow the Day Ten article for commands and investigation steps. No AWS deployment is needed to run `npm test`.
 
+## Rekognition image analysis
+
+Day Eleven adds `DetectLabels` directly to the Standard Workflow after the processed S3 copy and before completion. The request reads that copy's exact version, requests `GENERAL_LABELS` only, and limits results to ten labels at confidence 80 or above. The workflow role receives only `rekognition:DetectLabels` plus version reads under `processed/assets/*`.
+
+Completion stores a compact `analysis` map with label names/confidences, model version, threshold, and completion time. The existing owner-authorized `GET /assets/{assetId}` response includes this map for ready assets; the browser's JSON result panel displays it. Earlier ready records are not backfilled. Lifecycle event schemas stay unchanged.
+
+Invalid formats and oversized images follow rejection; transient Rekognition errors use three jittered retries, and other errors follow the existing failure path and alarms. Rejected processed copies can remain private in S3, and source deletion adds a delete marker rather than erasing all versions. General labels are descriptive suggestions, not moderation decisions. Use real PNG/JPEG images at least 80 pixels on each side within the existing five-MiB upload cap, in a Rekognition-supported Region.
+
+No model endpoint or collection is provisioned. Per-image inference, retries, workflow transitions, S3 access, and metadata storage incur usage charges. Execution history contains inference results; restrict operator access. Run `npm test` for synthesis, summary, and owner-authorization checks, then follow the Day Eleven article for deployment and live verification.
+
 ## Tutorial docs
 
 [aws from idea to infra](https://www.max-gherman.dev/partly-cloudy/aws-from-idea-to-infra/)
