@@ -5,7 +5,7 @@ const db = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 export const handler = async (event: any) => {
   const assetId = event?.pathParameters?.assetId;
-  const ownerId = event?.requestContext?.authorizer?.jwt?.claims?.sub;
+  const ownerId = event?.requestContext?.authorizer?.claims?.sub;
   if (!assetId || !ownerId) return reply(400, { error: 'assetId is required' });
 
   const { Item: asset } = await db.send(new GetCommand({
@@ -29,7 +29,10 @@ export const handler = async (event: any) => {
 
 const reply = (statusCode: number, body: unknown) => ({
   statusCode,
-  headers: { 'content-type': 'application/json' },
+  headers: {
+    'content-type': 'application/json',
+    'access-control-allow-origin': requiredEnv('ALLOWED_ORIGIN'),
+  },
   body: JSON.stringify(body),
 });
 

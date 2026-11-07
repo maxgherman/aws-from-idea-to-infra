@@ -46,7 +46,7 @@ jobs:
 
       - name: Destroy preview stack
         run: |
-          npx cdk destroy \
+          npx cdk destroy --all \
             -c pr=${PR_NUMBER} \
             -c acct=${ACCOUNT_ID} \
             -c reg=${{ vars.AWS_REGION }} \

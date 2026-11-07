@@ -1,155 +1,53 @@
-# AWS — from idea to infra (CDK)
+# AWS from idea to infra — Day Twelve
 
-Reference implementation for the “AWS — from idea to infra” tutorial series.
+Cumulative TypeScript CDK application for the series, through **Edge and API protection (AWS WAF)**. It includes private asset uploads, owner-authorized downloads, Step Functions image analysis, EventBridge events, SNS fan-out, and CloudWatch monitoring.
 
-This repo focuses on two things:
+This is the series reference repository, checked out as `aws-from-idea-to-infra/` at the root of the notes workspace. Run project commands here. The CI/CD workflows run from this repository's root.
 
-- *Account guardrails*: a dedicated deploy role you assume with MFA, plus an optional AWS Budget.
-- *PR preview infrastructure*: per‑pull‑request ephemeral infra deployed by GitHub Actions via OIDC (no long‑lived AWS keys), and torn down when the PR closes.
-- *Private asset processing*: authenticated browser uploads, private S3 storage, queue-buffered Step Functions workflows, DynamoDB metadata, EventBridge lifecycle events, and owner-authorized S3 delivery of accepted assets.
-- *Operations*: a CloudWatch dashboard, workflow and queue alarms, audit queries, and a separate encrypted SNS topic for operational alerts.
+## Local verification
 
-## Prerequisites
-
-- An AWS account with root locked down (MFA enabled; no root access keys).
-- An IAM user for day‑to‑day work (with MFA) and an AWS CLI profile (example: `admin`).
-- Node.js 24+ and `npm`.
-- CDK bootstrap completed in the target account/region.
-
-## What’s in here
-
-This is a CDK TypeScript app with multiple entrypoints in `bin/`:
-
-- `bin/deploy-role.ts`: creates `CdkDeployerRole` (assumable by an IAM user with MFA) and optionally a monthly AWS Budget.
-- `bin/gha-oidc-role.ts`: creates the GitHub OIDC provider + `GitHubActionsDeployRole` for CI/CD.
-- `bin/auth.ts`: deploys the long-lived Cognito user pool and hosted UI domain shared by previews.
-- `bin/preview.ts`: deploys the per‑PR asset preview stack (Cognito app client, private S3, SQS, Step Functions, EventBridge, Lambda, DynamoDB, CloudFront, and the static site).
-
-Stacks live in `lib/`.
-
-Static site content is in `site/` (replace this with your real build output when ready).
-
-## Local usage (one‑time setup)
-
-Install dependencies:
+Use Node.js 24 and install the locked dependencies:
 
 ```bash
 npm ci
+npm test
 ```
 
-Bootstrap CDK (once per account/region):
+Tests synthesize CDK templates and mock metadata operations. They do not deploy infrastructure, call Rekognition, or send notifications. Synthesis tests exercise both `us-east-1` and an application Region different from the edge ACL's Region.
 
-```bash
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --profile admin)
-REGION=us-east-1
-npx cdk bootstrap aws://$ACCOUNT_ID/$REGION --profile admin
-```
+## Architecture
 
-### Create the deploy role (CdkDeployerRole)
+The browser loads the site through CloudFront, then calls the regional REST API directly. Separate WAF web ACLs inspect both surfaces. The REST API uses Cognito ID tokens restricted to the current preview app client; Lambdas read REST proxy claims and enforce asset ownership.
 
-Deploy as your `admin` profile:
+The API issues a five-minute signed form for one S3 key and a maximum five-MiB upload. File bytes go directly to S3. S3 events enter SQS, the starter creates a Standard Workflow, task Lambdas validate and copy, and a direct Rekognition task analyzes the processed object version. Completion saves labels and ready state together. Owners read status and request a five-minute private download URL. S3 uploads and downloads do not pass through WAF.
 
-```bash
-npx cdk deploy DeployRoleStack \
-  --app "npx ts-node --prefer-ts-exts bin/deploy-role.ts" \
-  --profile admin \
-  -c adminUser=Admin
-```
+Terminal facts go through EventBridge to the audit log and the lifecycle SNS topic. Machine subscribers receive an SQS copy; optional confirmed operator email receives rejected/failed outcomes. A separate SNS topic carries operational alarms. Existing retry and DLQ boundaries remain distinct.
 
-### Optional: add a monthly budget
+## Existing CI/CD
 
-```bash
-npx cdk deploy BudgetStack \
-  --app "npx ts-node --prefer-ts-exts bin/deploy-role.ts" \
-  --profile dev \
-  -c budgetEmail=you@example.com \
-  -c budgetAmount=10
-```
+The reference workflows retain OIDC, per-PR identity, approval for `aws-preview`, and automatic `aws-teardown` on PR close. They now operate on **all stacks in `bin/preview.ts`**:
 
-### Create the GitHub OIDC role (for CI/CD)
+- `Stack-PR<number>-Edge`: CloudFront web ACL and WAF logs in `us-east-1`.
+- `Stack-PR<number>`: application, REST API stage, regional web ACL, and regional WAF logs in `AWS_REGION`.
 
-Deploy once (using a profile that can deploy CDK stacks, e.g. `dev` which assumes `CdkDeployerRole`):
+CDK's cross-region references connect the edge ARN to the distribution through CloudFormation custom resources and establish deployment/deletion order. CDK marks this feature experimental; keep locked versions and test both regional layouts when upgrading. The application stack must be removed before its edge stack. Keep the preview entrypoint unchanged when the teardown workflow synthesizes the assembly.
 
-```bash
-npx cdk deploy GithubOidcRoleStack \
-  --app "npx ts-node --prefer-ts-exts bin/gha-oidc-role.ts" \
-  --profile dev \
-  -c owner=YOUR_GITHUB_OWNER \
-  -c repo=YOUR_GITHUB_REPO \
-  -c env=aws-preview \
-  -c teardownEnv=aws-teardown
-```
+Prerequisites remain the earlier chapters' GitHub OIDC role/environments and long-lived `AssetSeriesAuth` stack in the application Region. The target account must be CDK-bootstrapped in **both the application Region and `us-east-1`** (once if they are the same). The deployment identity must be able to assume both Regions' bootstrap roles. CloudFormation needs WAF association/log delivery permissions and permission for CDK's cross-region reference helpers. No AWS credentials belong in the application or browser.
 
-Copy the `RoleArn` output — you’ll use it as `AWS_ROLE_ARN` in GitHub.
+Repository variables: `AWS_REGION`, `AWS_ROLE_ARN`, and `AWS_ACTOR`. Optional `NOTIFICATION_EMAIL` is a secret in the `aws-preview` environment. Its two SNS subscriptions still require confirmation. Outputs generate `site/config.js`; the REST stage `/preview` is part of `AssetApiBaseUrl`.
 
-### Create shared preview authentication
+## WAF policy and operations
 
-Deploy the authentication stack once per account and region. The user pool is retained independently of pull-request preview teardown.
+Each ACL applies a per-IP limit of 2,000 requests over five minutes, the AWS Common Rule Set, and Known Bad Inputs. The default is allow; terminating managed matches and the rate rule block. These are starting policies, not exact quotas or per-user limits. Shared NAT clients share an IP counter. Managed rules use their current default version; evaluate changes and false positives with normal application traffic before promotion.
 
-```bash
-npx cdk deploy AssetSeriesAuth \
-  --app "npx ts-node bin/auth.ts" \
-  --profile dev
-```
+WAF writes BLOCK and COUNT records to a dedicated `aws-waf-logs-*` group for each scope. Sampling is disabled. Web ACL data protection substitutes sensitive headers, the complete query string, and bodies, excluding their rule match details; logging redaction provides an additional layer. IPs and URI paths remain operational data. Restrict log access. Preview logs retain seven days, production logs one month.
 
-Create one operator-provisioned test user in the `UserPoolId` output. Future previews import this pool and create only their own callback-specific app client.
+After CI/CD succeeds, verify both web ACL associations, normal `/hello`, CORS preflight, sign-in, upload, labels, and private download. A single request with an empty `User-Agent` to `/hello` or the CloudFront URL should be blocked by the Common Rule Set's `NoUserAgent_HEADER` rule; correlate it with WAF logs. Do not generate a rate-limit burst. Authentication errors and WAF blocks can both appear as HTTP errors; inspect WAF logs before changing application authorization.
 
-## GitHub Actions setup
+The chapter's verification commands and trade-offs are in `src/content/partly-cloudy/aws-from-idea-to-infra/414-edge-api-protection/index.md` in the notes repository.
 
-Workflows live in `.github/workflows/`:
+## Migration and retention
 
-- `infra-preview.yml`: deploy/update the per‑PR preview stack and comment the preview URL.
-- `infra-destroy.yml`: destroy the per‑PR stack when the PR is closed.
+This version replaces the HTTP API with a regional REST API and changes handlers to `requestContext.authorizer.claims`. Existing saved assets, user pool, workflow, buckets, tables, and event contracts remain. The generated API base URL changes and includes the stage; hard-coded old URLs must be discarded. The first rollout can briefly serve old cached configuration while the old API is being removed; refresh configuration and retry, rather than accepting tokens from another app client.
 
-In your GitHub repo settings:
-
-- Create repository variables:
-
-  - `AWS_REGION` (example: `us-east-1`)
-  - `AWS_ROLE_ARN` (output of `GithubOidcRoleStack`)
-  - `AWS_ACTOR` (your GitHub username; used as a guard)
-
-- Create environments:
-
-  - `aws-preview` (typically require approval)
-  - `aws-teardown` (typically no approval)
-
-- Ensure workflow tokens can comment on PRs:
-
-- Recommended: set `Settings → Actions → General → Workflow permissions` to **Read and write**.
-- Fallback: create an Actions secret `PR_COMMENT_TOKEN` (fine‑grained PAT) and the workflow will use it for PR comments.
-
-Now: open a PR (from a branch in the same repo, not a fork). The workflow deploys `Stack-PR<number>` and comments the CloudFront URL plus the asset API URL.
-
-## Preview access and lifecycle
-
-- The preview stack is intentionally ephemeral: it deletes its Cognito app client, workflow, DynamoDB table, queues, and S3 objects when its PR closes.
-- The shared Cognito pool and its users remain in `AssetSeriesAuth`. User self-sign-up is disabled, so provision the series test user once instead of once per preview.
-- S3 notifications remain buffered in SQS. A starter Lambda creates one Standard Step Functions execution per asset, with explicit validation, transformation, ready, rejected, and failed paths.
-- Terminal workflow paths publish versioned `Asset State Changed` events to a custom EventBridge bus. A filtered rule retains an operator-facing audit stream in CloudWatch Logs and sends exhausted target deliveries to a separate SQS dead-letter queue.
-- Original and processed assets remain private. An owner can request a five-minute S3 download URL only after the worker accepts an asset.
-- CloudFront deletes can take a few minutes; teardown may be slower than deploy.
-
-## CloudWatch operations
-
-Each preview includes the dashboard named by `AssetDashboardName`, an encrypted operational topic in `AssetAlarmTopicArn`, and 11 alarms covering failed/timed-out executions, starter errors/throttles, queue age, four DLQs, and lifecycle SNS delivery failures. `lib/asset-monitoring.ts` owns this configuration; `tests/monitoring.test.ts` checks the synthesized resources.
-
-The optional `notificationEmail` context value adds both the existing filtered lifecycle subscription and a separate, unfiltered operational subscription. Confirm both subscriptions. It also enables the lifecycle email DLQ and its alarm, bringing the total to 12 alarms. The operational topic receives alarm and recovery transitions without sending alarm messages to the lifecycle integration queue.
-
-The integration queue is a demonstration subscriber with no automatic consumer. Drain test messages or expect its one-hour backlog alarm. Alarm periods are five minutes; backlog alarms require two breaching periods. Missing data is non-breaching for idle previews and does not prove end-to-end health. CloudWatch, Logs Insights, SNS, and KMS charges apply per preview.
-
-The `AssetWorkflowFailedAlarmName` output supports a disposable preview notification drill with `aws cloudwatch set-alarm-state`. This verifies the action channel; sending a diagnostic message to an empty preview admission DLQ verifies real metric evaluation. Delete the diagnostic message afterward and verify recovery. Follow the Day Ten article for commands and investigation steps. No AWS deployment is needed to run `npm test`.
-
-## Rekognition image analysis
-
-Day Eleven adds `DetectLabels` directly to the Standard Workflow after the processed S3 copy and before completion. The request reads that copy's exact version, requests `GENERAL_LABELS` only, and limits results to ten labels at confidence 80 or above. The workflow role receives only `rekognition:DetectLabels` plus version reads under `processed/assets/*`.
-
-Completion stores a compact `analysis` map with label names/confidences, model version, threshold, and completion time. The existing owner-authorized `GET /assets/{assetId}` response includes this map for ready assets; the browser's JSON result panel displays it. Earlier ready records are not backfilled. Lifecycle event schemas stay unchanged.
-
-Invalid formats and oversized images follow rejection; transient Rekognition errors use three jittered retries, and other errors follow the existing failure path and alarms. Rejected processed copies can remain private in S3, and source deletion adds a delete marker rather than erasing all versions. General labels are descriptive suggestions, not moderation decisions. Use real PNG/JPEG images at least 80 pixels on each side within the existing five-MiB upload cap, in a Rekognition-supported Region.
-
-No model endpoint or collection is provisioned. Per-image inference, retries, workflow transitions, S3 access, and metadata storage incur usage charges. Execution history contains inference results; restrict operator access. Run `npm test` for synthesis, summary, and owner-authorization checks, then follow the Day Eleven article for deployment and live verification.
-
-## Tutorial docs
-
-[aws from idea to infra](https://www.max-gherman.dev/partly-cloudy/aws-from-idea-to-infra/)
+Closing a PR triggers CI/CD to remove both preview stacks in dependency order. Production keeps the existing asset data and WAF logs according to retention policies; WAF ACLs and the API association follow stack deletion. WAF inspection, log ingestion/storage, REST API requests, and the previous application services all have pricing dimensions. Neither WAF nor teardown reverses charges already incurred.

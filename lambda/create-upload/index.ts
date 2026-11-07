@@ -10,10 +10,10 @@ const acceptedTypes = new Map<string, string>([
   ['image/jpeg', 'jpg'],
   ['image/png', 'png'],
 ]);
-const maxBytes = 10 * 1024 * 1024;
+const maxBytes = 5 * 1024 * 1024;
 
 export const handler = async (event: any) => {
-  const ownerId = event?.requestContext?.authorizer?.jwt?.claims?.sub;
+  const ownerId = event?.requestContext?.authorizer?.claims?.sub;
   if (!ownerId) return reply(401, { error: 'Authentication is required' });
 
   let request: { contentType?: string };
@@ -66,7 +66,10 @@ export const handler = async (event: any) => {
 
 const reply = (statusCode: number, body: unknown) => ({
   statusCode,
-  headers: { 'content-type': 'application/json' },
+  headers: {
+    'content-type': 'application/json',
+    'access-control-allow-origin': requiredEnv('ALLOWED_ORIGIN'),
+  },
   body: JSON.stringify(body),
 });
 

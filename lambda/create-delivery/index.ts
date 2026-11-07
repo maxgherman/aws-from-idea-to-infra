@@ -9,7 +9,7 @@ const ttlSeconds = 5 * 60;
 
 export const handler = async (event: any) => {
   const assetId = event?.pathParameters?.assetId;
-  const ownerId = event?.requestContext?.authorizer?.jwt?.claims?.sub;
+  const ownerId = event?.requestContext?.authorizer?.claims?.sub;
 
   if (!ownerId) return reply(401, { error: 'Authentication is required' });
   if (!assetId) return reply(400, { error: 'assetId is required' });
@@ -69,6 +69,7 @@ const reply = (statusCode: number, body: unknown) => ({
   headers: {
     'content-type': 'application/json',
     'cache-control': 'no-store',
+    'access-control-allow-origin': requiredEnv('ALLOWED_ORIGIN'),
   },
   body: JSON.stringify(body),
 });

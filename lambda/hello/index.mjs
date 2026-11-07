@@ -3,7 +3,7 @@ export const handler = async () => {
     statusCode: 200,
     headers: {
       'content-type': 'application/json',
-      'access-control-allow-origin': '*',
+      'access-control-allow-origin': process.env.ALLOWED_ORIGIN ?? '',
     },
     body: JSON.stringify({
       ok: true,

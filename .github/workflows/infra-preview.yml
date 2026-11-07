@@ -76,7 +76,7 @@ jobs:
             NOTIFICATION_ARGS=(-c "notificationEmail=$NOTIFICATION_EMAIL")
           fi
 
-          npx cdk deploy \
+          npx cdk deploy --all \
             -c pr=${PR_NUMBER} \
             -c acct=${ACCOUNT_ID} \
             -c reg=${{ vars.AWS_REGION }} \
