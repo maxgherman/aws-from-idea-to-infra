@@ -1,8 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
-import * as authorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
-import * as integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as apigw from 'aws-cdk-lib/aws-apigateway';
+import * as waf from 'aws-cdk-lib/aws-wafv2';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
@@ -26,10 +25,14 @@ import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import { join } from 'node:path';
 import { authExports } from './auth-stack';
 import { AssetMonitoring } from './asset-monitoring';
+import { EdgeProtectionStack, WebProtection } from './web-protection';
 
 export class Stack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
-    super(scope, id, props);
+    super(scope, id, { ...props, crossRegionReferences: true });
+    if (cdk.Token.isUnresolved(this.account) || cdk.Token.isUnresolved(this.region)) {
+      throw new Error('The application requires a concrete AWS account and Region');
+    }
 
     const pr = String(this.node.tryGetContext('pr') ?? 'local');
     const repo = this.node.tryGetContext('repo');
@@ -38,6 +41,10 @@ export class Stack extends cdk.Stack {
     const acct = this.node.tryGetContext('acct');
     const reg = this.node.tryGetContext('reg');
     const isPreview = pr !== 'production';
+    const edge = new EdgeProtectionStack(scope, `${id}-Edge`, {
+      env: { account: this.account, region: 'us-east-1' },
+      crossRegionReferences: true, isPreview,
+    });
     const cleanupPolicy = isPreview ? cdk.RemovalPolicy.DESTROY : cdk.RemovalPolicy.RETAIN;
     const lambdaEntry = (name: string) => join(process.cwd(), 'lambda', name, 'index.ts');
 
@@ -80,13 +87,13 @@ export class Stack extends cdk.Stack {
 
     const distribution = new cloudfront.Distribution(this, 'SiteDistribution', {
       defaultRootObject: 'index.html',
+      webAclId: edge.protection.acl.attrArn,
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
       },
       errorResponses: [
-        { httpStatus: 403, responseHttpStatus: 200, responsePagePath: '/index.html' },
         { httpStatus: 404, responseHttpStatus: 200, responsePagePath: '/index.html' },
       ],
     });
@@ -125,12 +132,6 @@ export class Stack extends cdk.Stack {
       },
       preventUserExistenceErrors: true,
     });
-
-    const userAuthorizer = new authorizers.HttpUserPoolAuthorizer(
-      'UserAuthorizer',
-      users,
-      { userPoolClients: [webClient] },
-    );
 
     const deadLetterQueue = new sqs.Queue(this, 'AssetsDeadLetterQueue', {
       encryption: sqs.QueueEncryption.SQS_MANAGED,
@@ -583,40 +584,58 @@ export class Stack extends cdk.Stack {
       { prefix: 'uploads/originals/' },
     );
 
-    const api = new apigwv2.HttpApi(this, 'PreviewApi', {
-      corsPreflight: {
-        allowHeaders: ['authorization', 'content-type'],
-        allowMethods: [apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.POST],
-        allowOrigins: [`https://${distribution.domainName}`],
+    const previewOrigin = `https://${distribution.domainName}`;
+    const api = new apigw.RestApi(this, 'PreviewRestApi', {
+      endpointTypes: [apigw.EndpointType.REGIONAL],
+      defaultCorsPreflightOptions: {
+        allowHeaders: ['Authorization', 'Content-Type'],
+        allowMethods: ['GET', 'POST', 'OPTIONS'],
+        allowOrigins: [previewOrigin],
+      },
+      deployOptions: {
+        stageName: 'preview', metricsEnabled: true,
+        throttlingRateLimit: 50, throttlingBurstLimit: 100,
+        dataTraceEnabled: false,
       },
     });
-
-    api.addRoutes({
-      path: '/hello',
-      methods: [apigwv2.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('HelloIntegration', hello),
+    const userAuthorizer = new apigw.CognitoUserPoolsAuthorizer(this, 'UserAuthorizer', {
+      cognitoUserPools: [users],
     });
-    api.addRoutes({
-      path: '/assets',
-      methods: [apigwv2.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration('CreateUploadIntegration', createUpload),
+    // Without this aud check, the shared pool would admit another preview's ID token.
+    (userAuthorizer.node.defaultChild as apigw.CfnAuthorizer).identityValidationExpression =
+      cdk.Fn.join('', ['^', webClient.userPoolClientId, '$']);
+    const authenticated = {
       authorizer: userAuthorizer,
+      authorizationType: apigw.AuthorizationType.COGNITO,
+    };
+    api.root.addResource('hello').addMethod('GET', new apigw.LambdaIntegration(hello));
+    const assetRoutes = api.root.addResource('assets');
+    assetRoutes.addMethod('POST', new apigw.LambdaIntegration(createUpload), authenticated);
+    const assetRoute = assetRoutes.addResource('{assetId}');
+    assetRoute.addMethod('GET', new apigw.LambdaIntegration(getAsset), authenticated);
+    assetRoute.addResource('delivery').addMethod('POST', new apigw.LambdaIntegration(createDelivery), authenticated);
+    for (const handler of [hello, createUpload, getAsset, createDelivery]) {
+      handler.addEnvironment('ALLOWED_ORIGIN', previewOrigin);
+    }
+    for (const [name, type] of [
+      ['ClientErrors', apigw.ResponseType.DEFAULT_4XX],
+      ['ServerErrors', apigw.ResponseType.DEFAULT_5XX],
+    ] as const) {
+      api.addGatewayResponse(name, { type, responseHeaders: {
+        'Access-Control-Allow-Origin': `'${previewOrigin}'`,
+        'Access-Control-Allow-Headers': "'Authorization,Content-Type'",
+        'Access-Control-Allow-Methods': "'GET,POST,OPTIONS'",
+      } });
+    }
+    const apiProtection = new WebProtection(this, 'ApiProtection', { scope: 'REGIONAL', isPreview });
+    const association = new waf.CfnWebACLAssociation(this, 'ApiWebAclAssociation', {
+      resourceArn: api.deploymentStage.stageArn,
+      webAclArn: apiProtection.acl.attrArn,
     });
-    api.addRoutes({
-      path: '/assets/{assetId}',
-      methods: [apigwv2.HttpMethod.GET],
-      integration: new integrations.HttpLambdaIntegration('GetAssetIntegration', getAsset),
-      authorizer: userAuthorizer,
-    });
-    api.addRoutes({
-      path: '/assets/{assetId}/delivery',
-      methods: [apigwv2.HttpMethod.POST],
-      integration: new integrations.HttpLambdaIntegration(
-        'CreateDeliveryIntegration',
-        createDelivery,
-      ),
-      authorizer: userAuthorizer,
-    });
+    association.node.addDependency(api.deploymentStage);
+    new cdk.CfnOutput(this, 'ApiWebAclArn', { value: apiProtection.acl.attrArn });
+    new cdk.CfnOutput(this, 'ApiWafLogGroupName', { value: apiProtection.logGroup.logGroupName });
+    new cdk.CfnOutput(this, 'ApiStageArn', { value: api.deploymentStage.stageArn });
 
     new AssetMonitoring(this, 'Monitoring', {
       workflow: assetWorkflow,
@@ -685,8 +704,8 @@ export class Stack extends cdk.Stack {
       value: `https://${distribution.domainName}/?pr=${encodeURIComponent(pr)}`,
     });
     new cdk.CfnOutput(this, 'DistributionId', { value: distribution.distributionId });
-    new cdk.CfnOutput(this, 'ApiUrl', { value: `${api.apiEndpoint}/hello` });
-    new cdk.CfnOutput(this, 'AssetApiBaseUrl', { value: api.apiEndpoint });
+    new cdk.CfnOutput(this, 'ApiUrl', { value: api.urlForPath('/hello') });
+    new cdk.CfnOutput(this, 'AssetApiBaseUrl', { value: api.url.replace(/\/$/, '') });
     new cdk.CfnOutput(this, 'AssetsTableName', { value: assets.tableName });
     new cdk.CfnOutput(this, 'AssetsQueueName', { value: assetsQueue.queueName });
     new cdk.CfnOutput(this, 'AssetsDeadLetterQueueName', { value: deadLetterQueue.queueName });

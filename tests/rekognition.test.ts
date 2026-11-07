@@ -27,12 +27,13 @@ test('keeps a bounded label summary and accepts an empty detection', () => {
 });
 
 test('exposes analysis only to the owner of a ready asset', async (t) => {
+  process.env.ALLOWED_ORIGIN = 'https://preview.cloudfront.net';
   process.env.ASSETS_TABLE_NAME = 'test-assets';
   const asset = { assetId: 'asset-1', ownerId: 'owner-1', status: 'ready', analysis: { labels: [] } };
   t.mock.method(DynamoDBDocumentClient.prototype, 'send', async () => ({ Item: asset }));
   const request = (sub: string) => ({
     pathParameters: { assetId: 'asset-1' },
-    requestContext: { authorizer: { jwt: { claims: { sub } } } },
+    requestContext: { authorizer: { claims: { sub } } },
   });
   assert.equal((await getAsset(request('owner-2'))).statusCode, 404);
   const response = await getAsset(request('owner-1'));
