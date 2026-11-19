@@ -2,11 +2,7 @@ name: PR Preview Infra
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
-
-concurrency:
-  group: pr-preview-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+    types: [opened, reopened, synchronize, labeled]
 
 permissions:
   id-token: write   # for OIDC
@@ -16,7 +12,10 @@ permissions:
 
 jobs:
   private-assets:
-    if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR }}
+    concurrency:
+      group: pr-preview-private-assets-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR && contains(github.event.pull_request.labels.*.name, 'deploy:private-assets') && (github.event.action != 'labeled' || github.event.label.name == 'deploy:private-assets') }}
     environment: aws-preview
     runs-on: ubuntu-latest
     env:
@@ -24,16 +23,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify PR is still open
+      - name: Verify PR is still open and selected
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PR_STATE=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
-            --jq '.state')
-
+          PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          PR_STATE=$(jq -r '.state' <<< "$PR_JSON")
           if [[ "$PR_STATE" != "open" ]]; then
             echo "::error::PR ${PR_NUMBER} is ${PR_STATE}; refusing to deploy its preview stack."
+            exit 1
+          fi
+          if ! jq -e --arg deployment_label "deploy:private-assets" '.labels | any(.name == $deployment_label)' <<< "$PR_JSON" > /dev/null; then
+            echo "::error::PR ${PR_NUMBER} no longer has deploy:private-assets; refusing to deploy."
             exit 1
           fi
 
@@ -157,20 +158,11 @@ jobs:
               throw new Error(`Missing AssetLifecycleLogGroupName output for stack "${stackName}"`);
             }
 
-            // Read booking ECR outputs if available.
-            let ecrRepoUri = '';
-            try {
-              const ecrOutputs = JSON.parse(fs.readFileSync('ecr-outputs.json', 'utf8'));
-              const ecrStackName = `BookingEcr-PR${process.env.PR_NUMBER}`;
-              ecrRepoUri = ecrOutputs?.[ecrStackName]?.RepositoryUri ?? '';
-            } catch (_) { /* ECR outputs are written by the booking job */ }
-
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = context.issue.number;
 
-            const ecrLine = ecrRepoUri ? `\nBooking ECR: ${ecrRepoUri}` : '';
-            const body = `${marker}\nPreview: ${previewUrl}\nAPI: ${apiUrl}\nAssets: ${assetApiBaseUrl}\nWorkflow: ${workflowArn}\nEvent bus: ${eventBusName}\nLifecycle log: ${lifecycleLogGroupName}${ecrLine}`;
+            const body = `${marker}\nPreview: ${previewUrl}\nAPI: ${apiUrl}\nAssets: ${assetApiBaseUrl}\nWorkflow: ${workflowArn}\nEvent bus: ${eventBusName}\nLifecycle log: ${lifecycleLogGroupName}`;
             const { data: comments } = await github.rest.issues.listComments({
               owner,
               repo,
@@ -199,14 +191,31 @@ jobs:
             }
 
   booking:
-    if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR }}
-    needs: [private-assets]
+    concurrency:
+      group: pr-preview-booking-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR && contains(github.event.pull_request.labels.*.name, 'deploy:booking') && (github.event.action != 'labeled' || github.event.label.name == 'deploy:booking') }}
     environment: aws-preview
     runs-on: ubuntu-latest
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify PR is still open and selected
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          PR_STATE=$(jq -r '.state' <<< "$PR_JSON")
+          if [[ "$PR_STATE" != "open" ]]; then
+            echo "::error::PR ${PR_NUMBER} is ${PR_STATE}; refusing to deploy its preview stack."
+            exit 1
+          fi
+          if ! jq -e --arg deployment_label "deploy:booking" '.labels | any(.name == $deployment_label)' <<< "$PR_JSON" > /dev/null; then
+            echo "::error::PR ${PR_NUMBER} no longer has deploy:booking; refusing to deploy."
+            exit 1
+          fi
 
       - uses: actions/setup-node@v4
         with:
@@ -258,7 +267,7 @@ jobs:
           docker build -t "$REPO_URI:$GITHUB_SHA" ./booking
           docker push "$REPO_URI:$GITHUB_SHA"
 
-      - name: Update PR comment with ECR URI
+      - name: Comment booking ECR URI
         uses: actions/github-script@v7
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -266,24 +275,23 @@ jobs:
         with:
           github-token: ${{ secrets.PR_COMMENT_TOKEN || github.token }}
           script: |
-            const marker = '<!-- pr-preview-urls -->';
+            const marker = '<!-- pr-booking-preview -->';
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = context.issue.number;
-
+            const body = `${marker}\nBooking ECR: ${process.env.REPO_URI}`;
             const { data: comments } = await github.rest.issues.listComments({
               owner, repo, issue_number, per_page: 100,
             });
             const existing = comments.find((c) =>
               c.user?.type === 'Bot' && typeof c.body === 'string' && c.body.includes(marker),
             );
-            if (!existing) return;
-
-            const ecrLine = `\nBooking ECR: ${process.env.REPO_URI}`;
-            const updatedBody = existing.body.includes('Booking ECR:')
-              ? existing.body.replace(/\nBooking ECR: .*/, ecrLine)
-              : existing.body + ecrLine;
-
-            await github.rest.issues.updateComment({
-              owner, repo, comment_id: existing.id, body: updatedBody,
-            });
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
+              });
+            }

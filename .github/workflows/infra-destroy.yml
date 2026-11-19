@@ -4,16 +4,15 @@ on:
   pull_request:
     types: [closed]
 
-concurrency:
-  group: pr-preview-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 permissions:
   id-token: write
   contents: read
 
 jobs:
   destroy:
+    concurrency:
+      group: pr-preview-private-assets-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR }}
     environment: aws-teardown
     runs-on: ubuntu-latest
@@ -57,8 +56,10 @@ jobs:
             -f
 
   booking-destroy:
+    concurrency:
+      group: pr-preview-booking-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR }}
-    needs: [destroy]
     environment: aws-teardown
     runs-on: ubuntu-latest
     env:

@@ -25,7 +25,15 @@ Terminal facts go through EventBridge to the audit log and the lifecycle SNS top
 
 ## Existing CI/CD
 
-The reference workflows retain OIDC, per-PR identity, approval for `aws-preview`, and automatic `aws-teardown` on PR close. They now operate on **all stacks in `bin/preview.ts`**:
+Choose what to deploy by adding labels to the PR (create these repository labels once if needed):
+
+- `deploy:private-assets`: deploy the Private Assets application.
+- `deploy:booking`: deploy the booking ECR repository and publish its image.
+- Add both labels to deploy both applications independently. Without either label, neither deploys.
+
+Adding a deployment label starts only that application's job. Subsequent PR updates redeploy the applications whose labels remain selected. Each selected job still requires the existing `aws-preview` environment approval. The jobs have separate concurrency groups and PR comments, so one application's approval, failure, or deployment does not block the other. Jobs recheck that the PR is open and still has their label after approval. Removing a label stops selection for future runs; it does not delete an existing preview or automatically cancel a run already waiting for approval.
+
+PR close triggers independent teardown for both applications, regardless of the current labels, so previously deployed resources are cleaned up even if a label was removed. The reference workflows retain OIDC and per-PR identity. The `private-assets` job operates on **all stacks in `bin/preview.ts`**:
 
 - `Stack-PR<number>-Edge`: CloudFront web ACL and WAF logs in `us-east-1`.
 - `Stack-PR<number>`: application, REST API stage, regional web ACL, and regional WAF logs in `AWS_REGION`.
