@@ -157,11 +157,20 @@ jobs:
               throw new Error(`Missing AssetLifecycleLogGroupName output for stack "${stackName}"`);
             }
 
+            // Read booking ECR outputs if available.
+            let ecrRepoUri = '';
+            try {
+              const ecrOutputs = JSON.parse(fs.readFileSync('ecr-outputs.json', 'utf8'));
+              const ecrStackName = `BookingEcr-PR${process.env.PR_NUMBER}`;
+              ecrRepoUri = ecrOutputs?.[ecrStackName]?.RepositoryUri ?? '';
+            } catch (_) { /* ECR outputs are written by the booking-build-push job */ }
+
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = context.issue.number;
 
-            const body = `${marker}\nPreview: ${previewUrl}\nAPI: ${apiUrl}\nAssets: ${assetApiBaseUrl}\nWorkflow: ${workflowArn}\nEvent bus: ${eventBusName}\nLifecycle log: ${lifecycleLogGroupName}`;
+            const ecrLine = ecrRepoUri ? `\nBooking ECR: ${ecrRepoUri}` : '';
+            const body = `${marker}\nPreview: ${previewUrl}\nAPI: ${apiUrl}\nAssets: ${assetApiBaseUrl}\nWorkflow: ${workflowArn}\nEvent bus: ${eventBusName}\nLifecycle log: ${lifecycleLogGroupName}${ecrLine}`;
             const { data: comments } = await github.rest.issues.listComments({
               owner,
               repo,
@@ -188,3 +197,93 @@ jobs:
                 body,
               });
             }
+
+  booking-build-push:
+    if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR }}
+    needs: [deploy]
+    environment: aws-preview
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-session-name: pr-${{ github.event.pull_request.number }}-ecr
+          audience: sts.amazonaws.com
+
+      - name: Resolve CDK env
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=$ACCOUNT_ID" >> $GITHUB_ENV
+          echo "CDK_DEFAULT_ACCOUNT=$ACCOUNT_ID" >> $GITHUB_ENV
+          echo "CDK_DEFAULT_REGION=${{ vars.AWS_REGION }}" >> $GITHUB_ENV
+
+      - name: Deploy ECR stack
+        run: |
+          npx cdk deploy \
+            -c pr=${PR_NUMBER} \
+            -c acct=${ACCOUNT_ID} \
+            -c reg=${{ vars.AWS_REGION }} \
+            -c repo=${GITHUB_REPOSITORY} \
+            -c sha=${GITHUB_SHA} \
+            -c run=${GITHUB_RUN_ID} \
+            --app "npx ts-node bin/booking-ecr.ts" \
+            --require-approval never \
+            --outputs-file ecr-outputs.json
+
+      - name: Read ECR repository URI
+        run: |
+          ECR_STACK="BookingEcr-PR${PR_NUMBER}"
+          REPO_URI=$(jq -r --arg stack "$ECR_STACK" '.[$stack].RepositoryUri' ecr-outputs.json)
+          test -n "$REPO_URI" && test "$REPO_URI" != "null"
+          echo "REPO_URI=$REPO_URI" >> $GITHUB_ENV
+
+      - name: Authenticate with ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push booking image
+        run: |
+          docker build -t "$REPO_URI:$GITHUB_SHA" ./booking
+          docker push "$REPO_URI:$GITHUB_SHA"
+
+      - name: Update PR comment with ECR URI
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_URI: ${{ env.REPO_URI }}
+        with:
+          github-token: ${{ secrets.PR_COMMENT_TOKEN || github.token }}
+          script: |
+            const marker = '<!-- pr-preview-urls -->';
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.issue.number;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find((c) =>
+              c.user?.type === 'Bot' && typeof c.body === 'string' && c.body.includes(marker),
+            );
+            if (!existing) return;
+
+            const ecrLine = `\nBooking ECR: ${process.env.REPO_URI}`;
+            const updatedBody = existing.body.includes('Booking ECR:')
+              ? existing.body.replace(/\nBooking ECR: .*/, ecrLine)
+              : existing.body + ecrLine;
+
+            await github.rest.issues.updateComment({
+              owner, repo, comment_id: existing.id, body: updatedBody,
+            });
