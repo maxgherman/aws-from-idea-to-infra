@@ -25,7 +25,18 @@ Terminal facts go through EventBridge to the audit log and the lifecycle SNS top
 
 ## Existing CI/CD
 
-The reference workflows retain OIDC, per-PR identity, approval for `aws-preview`, and automatic `aws-teardown` on PR close. They now operate on **all stacks in `bin/preview.ts`**:
+Opening, reopening, or updating a PR starts two independent preview workflows:
+
+| Workflow | Job | Approval environment |
+| --- | --- | --- |
+| `infra-preview.yml` — PR Preview Private Assets | `private-assets` | `aws-preview` |
+| `booking-preview.yml` — PR Preview Booking | `booking` | `aws-preview` |
+
+Both runs wait for the existing `aws-preview` required-reviewer approval. Open **Review deployments** in the workflow you want and approve it; the other run stays pending. Approve both to deploy both applications. No labels or manual workflow inputs are required.
+
+GitHub reviews environment deployments within a workflow run. Keeping the applications in separate runs lets each use the existing protected environment and OIDC trust while receiving an independent approval. Keep required reviewers enabled on `aws-preview`; the workflow files reference that protection but do not configure it. Separate concurrency groups and PR comments prevent either application's pending approval, failure, or deployment from blocking the other. After approval, each job checks that the PR is still open.
+
+PR close triggers independent teardown for both applications, including when only one preview was approved. The reference workflows retain OIDC and per-PR identity. The `private-assets` job operates on **all stacks in `bin/preview.ts`**:
 
 - `Stack-PR<number>-Edge`: CloudFront web ACL and WAF logs in `us-east-1`.
 - `Stack-PR<number>`: application, REST API stage, regional web ACL, and regional WAF logs in `AWS_REGION`.

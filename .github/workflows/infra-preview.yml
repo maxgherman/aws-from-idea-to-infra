@@ -1,12 +1,8 @@
-name: PR Preview Infra
+name: PR Preview Private Assets
 
 on:
   pull_request:
     types: [opened, reopened, synchronize]
-
-concurrency:
-  group: pr-preview-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 
 permissions:
   id-token: write   # for OIDC
@@ -15,7 +11,10 @@ permissions:
   pull-requests: write
 
 jobs:
-  deploy:
+  private-assets:
+    concurrency:
+      group: pr-preview-private-assets-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR }}
     environment: aws-preview
     runs-on: ubuntu-latest
@@ -28,10 +27,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PR_STATE=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
-            --jq '.state')
-
+          PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          PR_STATE=$(jq -r '.state' <<< "$PR_JSON")
           if [[ "$PR_STATE" != "open" ]]; then
             echo "::error::PR ${PR_NUMBER} is ${PR_STATE}; refusing to deploy its preview stack."
             exit 1

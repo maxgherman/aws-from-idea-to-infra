@@ -4,16 +4,15 @@ on:
   pull_request:
     types: [closed]
 
-concurrency:
-  group: pr-preview-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 permissions:
   id-token: write
   contents: read
 
 jobs:
   destroy:
+    concurrency:
+      group: pr-preview-private-assets-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR }}
     environment: aws-teardown
     runs-on: ubuntu-latest
@@ -54,4 +53,50 @@ jobs:
             -c sha=${GITHUB_SHA} \
             -c run=${GITHUB_RUN_ID} \
             --app "npx ts-node bin/preview.ts" \
+            -f
+
+  booking-destroy:
+    concurrency:
+      group: pr-preview-booking-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR }}
+    environment: aws-teardown
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-session-name: pr-${{ github.event.pull_request.number }}-ecr-destroy
+          audience: sts.amazonaws.com
+
+      - name: Resolve CDK env
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=$ACCOUNT_ID" >> $GITHUB_ENV
+          echo "CDK_DEFAULT_ACCOUNT=$ACCOUNT_ID" >> $GITHUB_ENV
+          echo "CDK_DEFAULT_REGION=${{ vars.AWS_REGION }}" >> $GITHUB_ENV
+
+      - name: Destroy ECR stack
+        run: |
+          npx cdk destroy \
+            -c pr=${PR_NUMBER} \
+            -c acct=${ACCOUNT_ID} \
+            -c reg=${{ vars.AWS_REGION }} \
+            -c repo=${GITHUB_REPOSITORY} \
+            -c sha=${GITHUB_SHA} \
+            -c run=${GITHUB_RUN_ID} \
+            --app "npx ts-node bin/booking-ecr.ts" \
             -f
