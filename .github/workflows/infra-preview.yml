@@ -1,8 +1,8 @@
-name: PR Preview Infra
+name: PR Preview Private Assets
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, labeled]
+    types: [opened, reopened, synchronize]
 
 permissions:
   id-token: write   # for OIDC
@@ -15,7 +15,7 @@ jobs:
     concurrency:
       group: pr-preview-private-assets-${{ github.event.pull_request.number }}
       cancel-in-progress: true
-    if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR && contains(github.event.pull_request.labels.*.name, 'deploy:private-assets') && (github.event.action != 'labeled' || github.event.label.name == 'deploy:private-assets') }}
+    if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR }}
     environment: aws-preview
     runs-on: ubuntu-latest
     env:
@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify PR is still open and selected
+      - name: Verify PR is still open
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -31,10 +31,6 @@ jobs:
           PR_STATE=$(jq -r '.state' <<< "$PR_JSON")
           if [[ "$PR_STATE" != "open" ]]; then
             echo "::error::PR ${PR_NUMBER} is ${PR_STATE}; refusing to deploy its preview stack."
-            exit 1
-          fi
-          if ! jq -e --arg deployment_label "deploy:private-assets" '.labels | any(.name == $deployment_label)' <<< "$PR_JSON" > /dev/null; then
-            echo "::error::PR ${PR_NUMBER} no longer has deploy:private-assets; refusing to deploy."
             exit 1
           fi
 
@@ -187,111 +183,5 @@ jobs:
                 repo,
                 issue_number,
                 body,
-              });
-            }
-
-  booking:
-    concurrency:
-      group: pr-preview-booking-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
-    if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR && contains(github.event.pull_request.labels.*.name, 'deploy:booking') && (github.event.action != 'labeled' || github.event.label.name == 'deploy:booking') }}
-    environment: aws-preview
-    runs-on: ubuntu-latest
-    env:
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Verify PR is still open and selected
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
-          PR_STATE=$(jq -r '.state' <<< "$PR_JSON")
-          if [[ "$PR_STATE" != "open" ]]; then
-            echo "::error::PR ${PR_NUMBER} is ${PR_STATE}; refusing to deploy its preview stack."
-            exit 1
-          fi
-          if ! jq -e --arg deployment_label "deploy:booking" '.labels | any(.name == $deployment_label)' <<< "$PR_JSON" > /dev/null; then
-            echo "::error::PR ${PR_NUMBER} no longer has deploy:booking; refusing to deploy."
-            exit 1
-          fi
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      - name: Install deps
-        run: npm ci
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: ${{ vars.AWS_REGION }}
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          role-session-name: pr-${{ github.event.pull_request.number }}-ecr
-          audience: sts.amazonaws.com
-
-      - name: Resolve CDK env
-        run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "ACCOUNT_ID=$ACCOUNT_ID" >> $GITHUB_ENV
-          echo "CDK_DEFAULT_ACCOUNT=$ACCOUNT_ID" >> $GITHUB_ENV
-          echo "CDK_DEFAULT_REGION=${{ vars.AWS_REGION }}" >> $GITHUB_ENV
-
-      - name: Deploy ECR stack
-        run: |
-          npx cdk deploy \
-            -c pr=${PR_NUMBER} \
-            -c acct=${ACCOUNT_ID} \
-            -c reg=${{ vars.AWS_REGION }} \
-            -c repo=${GITHUB_REPOSITORY} \
-            -c sha=${GITHUB_SHA} \
-            -c run=${GITHUB_RUN_ID} \
-            --app "npx ts-node bin/booking-ecr.ts" \
-            --require-approval never \
-            --outputs-file ecr-outputs.json
-
-      - name: Read ECR repository URI
-        run: |
-          ECR_STACK="BookingEcr-PR${PR_NUMBER}"
-          REPO_URI=$(jq -r --arg stack "$ECR_STACK" '.[$stack].RepositoryUri' ecr-outputs.json)
-          test -n "$REPO_URI" && test "$REPO_URI" != "null"
-          echo "REPO_URI=$REPO_URI" >> $GITHUB_ENV
-
-      - name: Authenticate with ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build and push booking image
-        run: |
-          docker build -t "$REPO_URI:$GITHUB_SHA" ./booking
-          docker push "$REPO_URI:$GITHUB_SHA"
-
-      - name: Comment booking ECR URI
-        uses: actions/github-script@v7
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO_URI: ${{ env.REPO_URI }}
-        with:
-          github-token: ${{ secrets.PR_COMMENT_TOKEN || github.token }}
-          script: |
-            const marker = '<!-- pr-booking-preview -->';
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const issue_number = context.issue.number;
-            const body = `${marker}\nBooking ECR: ${process.env.REPO_URI}`;
-            const { data: comments } = await github.rest.issues.listComments({
-              owner, repo, issue_number, per_page: 100,
-            });
-            const existing = comments.find((c) =>
-              c.user?.type === 'Bot' && typeof c.body === 'string' && c.body.includes(marker),
-            );
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner, repo, comment_id: existing.id, body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner, repo, issue_number, body,
               });
             }
