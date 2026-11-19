@@ -15,7 +15,7 @@ permissions:
   pull-requests: write
 
 jobs:
-  deploy:
+  private-assets:
     if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR }}
     environment: aws-preview
     runs-on: ubuntu-latest
@@ -163,7 +163,7 @@ jobs:
               const ecrOutputs = JSON.parse(fs.readFileSync('ecr-outputs.json', 'utf8'));
               const ecrStackName = `BookingEcr-PR${process.env.PR_NUMBER}`;
               ecrRepoUri = ecrOutputs?.[ecrStackName]?.RepositoryUri ?? '';
-            } catch (_) { /* ECR outputs are written by the booking-build-push job */ }
+            } catch (_) { /* ECR outputs are written by the booking job */ }
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -198,9 +198,9 @@ jobs:
               });
             }
 
-  booking-build-push:
+  booking:
     if: ${{ !github.event.pull_request.head.repo.fork && vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && github.event.pull_request.user.login == vars.AWS_ACTOR }}
-    needs: [deploy]
+    needs: [private-assets]
     environment: aws-preview
     runs-on: ubuntu-latest
     env:

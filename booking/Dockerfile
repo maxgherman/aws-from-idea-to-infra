@@ -4,8 +4,8 @@ FROM node:24-alpine AS builder
 WORKDIR /build
 
 # Install dependencies before copying source so this layer is cached
-# unless package.json or tsconfig.json change.
-COPY package.json tsconfig.json ./
+# unless the package manifests or tsconfig.json change.
+COPY package.json package-lock.json tsconfig.json ./
 RUN npm ci
 
 # Compile TypeScript.
